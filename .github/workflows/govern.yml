@@ -1,0 +1,39 @@
+# S4: run the governance eval suite on every PR and push to main; block on policy failures.
+name: AI governance gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  govern:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run eval suite (promptfoo)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        # promptfoo exits non-zero when any test fails; gate.py makes the pass/fail decision instead.
+        run: npx -y promptfoo@0.123.1 eval -c promptfooconfig.yaml -o results/results.json --no-cache || true
+
+      - name: Policy gate
+        run: uv run python gate.py results/results.json
+
+      - name: Upload evidence
+        if: always()   # keep the evidence even when the gate blocks
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-evidence
+          path: results/
