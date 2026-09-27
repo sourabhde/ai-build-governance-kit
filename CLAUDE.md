@@ -16,7 +16,7 @@ Roles for the app: "employee" and "manager".
   Judge model: qwen/qwen3.8-27b on Groq (different model family from the answering model).
 - Evals: promptfoo. Prefer deterministic code checks; use an LLM judge only where meaning matters,
   and the judge must be a DIFFERENT model from the one answering.
-- Never present this as any company's official product; any SDK docs are a clearly labelled personal concept.
+- SDK docs are a clearly labelled personal concept; never use any other names or branding.
 
 ## Plan
 S1 rag.py: small RAG over data/ with role-based access filtering at retrieval
