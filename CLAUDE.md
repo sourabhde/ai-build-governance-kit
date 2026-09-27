@@ -12,6 +12,8 @@ Roles for the app: "employee" and "manager".
 - Keep everything small and readable; a PM must be able to explain every file.
 - Python 3.12 via uv (`uv run ...`, `uv add ...`). No LangChain or other agent/RAG frameworks.
 - LLM: Groq API, key in .env as GROQ_API_KEY. NEVER print, log, or commit .env or the key.
+  Answering model: openai/gpt-oss-120b (llama-3.3-70b-versatile was retired from Groq).
+  Judge model: qwen/qwen3.8-27b on Groq (different model family from the answering model).
 - Evals: promptfoo. Prefer deterministic code checks; use an LLM judge only where meaning matters,
   and the judge must be a DIFFERENT model from the one answering.
 - Never claim this is an official OneTrust product; any SDK README is a clearly labelled personal concept.
