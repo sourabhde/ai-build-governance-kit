@@ -36,14 +36,14 @@ def main(results_path: str) -> int:
         rows.append({"rule": rid, "severity": rule["severity"], "passed": passed[rid], "total": n,
                      "pass_rate": round(rate, 3), "threshold": rule["pass_threshold"],
                      "result": "PASS" if ok else "FAIL"})
-    verdict = "BLOCKED" if block else "OK"
+    verdict = "BLOCKED" if block else "PASSED"
 
     # 1. Console table
     print(f"{'rule':<24}{'severity':<10}{'pass rate':<14}{'threshold':<11}result")
     for r in rows:
         print(f"{r['rule']:<24}{r['severity']:<10}{f'{r['pass_rate']:.0%} ({r['passed']}/{r['total']})':<14}"
               f"{r['threshold']:<11}{r['result']}")
-    print("\nGATE:", "BLOCKED - fix failing rules before merging." if block else "OK to merge.")
+    print("\nGATE:", "BLOCKED - fix failing rules before merging." if block else "PASSED - OK to merge.")
 
     # 2. Evidence file: what was tested, against which policy version, with what result.
     sha = os.environ.get("GITHUB_SHA") or subprocess.run(
@@ -63,7 +63,7 @@ def main(results_path: str) -> int:
 
     # 3. GitHub job summary (shown on the PR / run page), only when running in Actions.
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
-        lines = [f"## Governance gate: {'❌ BLOCKED' if block else '✅ OK'}", "",
+        lines = [f"## Governance gate: {'❌ BLOCKED' if block else '✅ PASSED'}", "",
                  "| Rule | Severity | Pass rate | Threshold | Result |", "|---|---|---|---|---|"]
         lines += [f"| {r['rule']} | {r['severity']} | {r['pass_rate']:.0%} ({r['passed']}/{r['total']}) "
                   f"| {r['threshold']} | {r['result']} |" for r in rows]
