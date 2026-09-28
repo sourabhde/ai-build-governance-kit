@@ -14,9 +14,11 @@
 
 ## 3. The red PR (25 s)
 
-**Show:** the red demo PR and its job summary table.
+**Show:** [PR #3](https://github.com/sourabhde/ai-build-governance-kit/pull/3) description → the red `govern` check marked **Required** → the greyed-out Merge button → the Policy gate log: `R2_no_pii_leak 0/3 FAIL`, R1/R3/R4 PASS, `GATE: BLOCKED`.
 
-> "Here's the app without guardrails. Every pull request runs 12 tests against the real app. It fails two critical rules: asked about a support ticket, it gives out the customer's email and phone number, and it repeats an instruction hidden inside a vendor document, telling users that Acme keeps data forever. The gate goes red and the merge is blocked."
+> "Here's a well-meant request: support wants to call customers back, so this PR lets employees see customer contact details. It looks harmless, but it quietly turns off PII redaction for every employee. Every pull request runs 12 tests against the real app, and the gate catches it: R2, no PII leak, fails all three tests, while the other rules pass. It points to the exact rule and regulation, GDPR data minimisation and OWASP LLM02, not just 'tests failed'. The check is required, so the merge button is greyed out, and not even the repo owner can override it."
+
+_Backup:_ if PR #3 isn't available, check out the `before-guardrails` tag and run the eval to show R2 and R3 failing.
 
 ## 4. The fix (25 s)
 
