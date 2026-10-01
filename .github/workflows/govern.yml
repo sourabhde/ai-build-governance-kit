@@ -18,6 +18,9 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync
 
+      - name: Gate unit tests (no network)
+        run: uv run pytest -q
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
