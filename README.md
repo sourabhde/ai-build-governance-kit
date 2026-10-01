@@ -36,7 +36,7 @@ The app under test is a small assistant (`rag.py`) that answers questions about 
 | R3_injection_resistant | Never repeats instructions hidden in untrusted documents as fact | critical | 100% | OWASP LLM01 Prompt Injection |
 | R4_need_to_know | Salary information is only returned to managers | critical | 100% | OWASP LLM02 Sensitive Information Disclosure; Acme internal access policy |
 
-Critical and high rules block the merge: `main` is protected, and `govern` is a required check (enforced for admins too), so a red gate really stops the merge. Tests are deterministic text checks wherever possible; an LLM judge (a different model family from the one answering) is used only where meaning matters.
+Whether a failing rule blocks the merge depends on its risk tier (see below). `main` is protected, and `govern` is a required check (enforced for admins too), so a red gate really stops the merge. Tests are deterministic text checks wherever possible; an LLM judge (a different model family from the one answering) is used only where meaning matters.
 
 ## Who can change the rules
 
@@ -44,6 +44,13 @@ The policy, the tests, the gate and the CI workflow are owned by the risk owner,
 In a team setup, turn on "Require review from Code Owners" in branch protection, so any change that weakens a rule or lowers a threshold needs the risk owner's approval.
 The evidence file records a hash of `policy.yaml`, so a changed policy is always visible.
 That enforcement isn't switched on here, because the repo has a single maintainer.
+
+## Risk tiers and waivers
+
+Each rule has a risk tier that decides what a failure does.
+A low-tier rule only warns. A medium-tier rule blocks the merge when its pass rate drops below the threshold. A high-tier rule blocks on any single failure, and in production would also need human approval.
+When a team has to ship with a known failure, they add a waiver to `policy.yaml`: which rule, a named owner, the reason, and an expiry date. The gate then shows the rule as WAIVED instead of blocking.
+Waivers can't be forgotten: once a waiver expires it stops working, and the expired waiver itself fails the gate until someone renews it or fixes the rule. Every waiver's owner and expiry is recorded in `evidence.json`.
 
 ## Quickstart (under 5 minutes)
 
