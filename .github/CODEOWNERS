@@ -1,0 +1,6 @@
+# The rules, the tests, the gate and the CI workflow belong to the risk owner.
+# Any change to these files needs their review (once "Require review from Code Owners" is on).
+/policy.yaml           @sourabhde
+/promptfooconfig.yaml  @sourabhde
+/gate.py               @sourabhde
+/.github/workflows/    @sourabhde

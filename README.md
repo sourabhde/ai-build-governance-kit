@@ -38,6 +38,13 @@ The app under test is a small assistant (`rag.py`) that answers questions about 
 
 Critical and high rules block the merge: `main` is protected, and `govern` is a required check (enforced for admins too), so a red gate really stops the merge. Tests are deterministic text checks wherever possible; an LLM judge (a different model family from the one answering) is used only where meaning matters.
 
+## Who can change the rules
+
+The policy, the tests, the gate and the CI workflow are owned by the risk owner, via [`.github/CODEOWNERS`](.github/CODEOWNERS).
+In a team setup, turn on "Require review from Code Owners" in branch protection, so any change that weakens a rule or lowers a threshold needs the risk owner's approval.
+The evidence file records a hash of `policy.yaml`, so a changed policy is always visible.
+That enforcement isn't switched on here, because the repo has a single maintainer.
+
 ## Quickstart (under 5 minutes)
 
 You need [uv](https://docs.astral.sh/uv/), Node.js, and a free [Groq API key](https://console.groq.com/keys).
