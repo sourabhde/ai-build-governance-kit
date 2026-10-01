@@ -48,9 +48,10 @@ That enforcement isn't switched on here, because the repo has a single maintaine
 ## Gate tiers and waivers
 
 Each rule has a gate tier (`gate_tier` in `policy.yaml`) that decides what a failure does.
-A low-tier rule only warns. Medium- and high-tier rules block the merge when the rule's pass rate drops below its threshold; in this gate the two behave the same, and human approval for high-risk actions is planned for a later runtime step.
+A low-tier rule only warns. A medium-tier rule blocks the merge when its pass rate drops below the threshold. A high-tier rule blocks on any single failing test, whatever the threshold.
 When a team has to ship with a known failure, they add a waiver to `policy.yaml`: which rule, a named owner, the reason, and an expiry date. The gate then shows the rule as WAIVED instead of blocking.
-Waivers can't be forgotten: once a waiver expires it stops working, and the expired waiver itself fails the gate until someone renews it or fixes the rule. Every waiver's owner and expiry is recorded in `evidence.json`.
+Waivers are stricter for riskier rules: a medium-tier waiver can run for at most 30 days; a high-tier waiver at most 14 days, and it must also be approved by a second person (`approved_by`), not the owner.
+Waivers can't be forgotten: a waiver that is incomplete, too long or expired fails the gate by itself until someone fixes it. Every waiver's owner, approver and expiry is recorded in `evidence.json`.
 
 ## Quickstart (under 5 minutes)
 

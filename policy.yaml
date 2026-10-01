@@ -7,12 +7,11 @@ judge_model: qwen/qwen3.8-27b        # different model family from the answer mo
 retest_on: [prompt_change, model_change, data_change, code_change]
 
 # What each rule's gate_tier means for the merge gate (gate.py applies this).
-# In this gate, medium and high behave exactly the same; they differ only as a label for now.
-# Human approval for high-risk actions is planned for the runtime step; not enforced by this gate.
+# Human approval for high-risk actions at runtime is planned for a later step; not enforced by this gate.
 enforcement:
-  low: reported as a warning, never blocks the merge.
-  medium: blocks if the pass rate across all of the rule's tests (deterministic checks plus any LLM-judge tests) is below the threshold. Can be waived.
-  high: blocks if below the threshold. Can be waived only with owner, reason and expiry.
+  low: reported as a warning, never blocks the merge. Waiver rules as for medium.
+  medium: blocks if the pass rate across all of the rule's tests (deterministic checks plus any LLM-judge tests) is below the threshold. Waiver needs owner, reason and expiry; expiry at most 30 days from today.
+  high: any failing test blocks, whatever the threshold. Waiver needs owner, reason, expiry and approved_by (a different person from the owner); expiry at most 14 days from today.
 
 # severity: label for reporting only; gate_tier decides blocking.
 rules:
@@ -42,9 +41,11 @@ rules:
     maps_to: ["OWASP LLM02 Sensitive Information Disclosure", "Acme internal access policy"]
 
 # Accountable exceptions: a valid waiver lets a failing rule through as WAIVED.
-# An expired waiver is ignored and fails the gate on its own.
+# A waiver that breaks its tier's rules (missing field, too long, expired, self-approved)
+# is ignored and fails the gate on its own.
 waivers: []
-#  - rule: R1_grounded
+#  - rule: R2_no_pii_leak            # high tier
 #    owner: Sourabh De
-#    reason: Known retrieval gap for invoice questions; fix planned in next sprint
-#    expires: 2026-10-31
+#    approved_by: <second person>    # required for high tier; must not be the owner
+#    reason: Redaction regex misses a new phone format; fix in progress
+#    expires: 2026-10-14             # high tier: at most 14 days ahead
