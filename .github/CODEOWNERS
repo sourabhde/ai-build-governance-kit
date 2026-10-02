@@ -8,3 +8,5 @@
 /agent/                @sourabhde
 # Regression tests generated from runtime events: a person reviews them before they join the suite.
 /tests/generated/      @sourabhde
+# The runtime guard enforces the policy at request time.
+/runtime/              @sourabhde

@@ -39,8 +39,12 @@ def run(request: str) -> dict:
     load_dotenv()
     client = Groq()  # reads GROQ_API_KEY from the environment
     tools = QuoteTools()
-    guard = Guard("quoting_assistant")  # runtime guard: checks every tool call against policy.yaml
-    latency = 0.0
+    guard = Guard("quoting_assistant")  # runtime guard: checks the request and every tool call against policy.yaml
+    checked_in = guard.check_input(request)
+    latency = checked_in.latency_ms
+    if not checked_in.allowed:  # the model is never called
+        return {"decision": "refused", "answer": checked_in.message, "tool_calls": [],
+                "guard": {"blocked_by": checked_in.rule_id, "latency_ms": round(latency, 3)}}
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": request}]
     calls = []
     for _ in range(MAX_STEPS):

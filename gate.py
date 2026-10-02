@@ -98,9 +98,10 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
     verdict = "BLOCKED" if block else "PASSED"
 
     # 1. Console table, then waiver notes
-    print(f"{'rule':<24}{'system':<19}{'gate_tier':<11}{'severity':<10}{'pass rate':<14}{'threshold':<11}result")
+    sys_width = max([len("system")] + [len(",".join(r["systems"])) for r in rows]) + 2
+    print(f"{'rule':<24}{'system':<{sys_width}}{'gate_tier':<11}{'severity':<10}{'pass rate':<14}{'threshold':<11}result")
     for r in rows:
-        print(f"{r['rule']:<24}{','.join(r['systems']) or '-':<19}{r['gate_tier']:<11}{r['severity']:<10}"
+        print(f"{r['rule']:<24}{','.join(r['systems']) or '-':<{sys_width}}{r['gate_tier']:<11}{r['severity']:<10}"
               f"{f'{r['pass_rate']:.0%} ({r['passed']}/{r['total']})':<14}{r['threshold']:<11}{r['result']}")
     for r in rows:
         if r["result"] == "WAIVED":
