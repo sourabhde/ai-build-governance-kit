@@ -208,7 +208,8 @@ def test_each_run_appends_a_history_line_and_records_tests():
     assert len(lines) == 2
     last = json.loads(lines[-1])
     assert last["label"] == "second run" and last["gate"] == "PASSED" and code == 0
-    assert last["rules"]["A"] == {"pass_rate": 0.5, "result": "PASS"}
+    assert last["rules"]["A"] == {"pass_rate": 0.5, "result": "PASS", "passed": 1, "total": 2}
+    assert [t["passed"] for t in last["tests"]] == [True, False]
     assert len(last["policy_sha256"]) == 64
     tests = json.loads(Path("results/evidence.json").read_text())["tests"]
     assert [t["passed"] for t in tests] == [True, False] and all(t["rule"] == "A" for t in tests)

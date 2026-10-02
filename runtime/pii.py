@@ -3,7 +3,7 @@ import re
 
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 PHONE = re.compile(r"\+?\d[\d\s\-‐‑]{8,}\d")  # also catches no-break spaces/hyphens
-COMPANY_EMAIL_DOMAIN = "@acme.example"  # Acme's own contact addresses are not personal data
+COMPANY_EMAIL_DOMAIN = "@company.example"  # the company's own contact addresses are not personal data
 
 
 def redact_pii(text: str) -> str:

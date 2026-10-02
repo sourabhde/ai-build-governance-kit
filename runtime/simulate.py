@@ -7,7 +7,7 @@ Calls the live model (needs GROQ_API_KEY in .env). Events are appended to runtim
 import json
 import os
 
-os.environ["ACME_GUARDRAILS"] = "off"  # policy assistant without its own redaction and comment stripping
+os.environ["APP_GUARDRAILS"] = "off"  # policy assistant without its own redaction and comment stripping
 os.environ["RUNTIME_GUARD"] = "on"
 
 import agent.tools  # noqa: E402

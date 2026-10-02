@@ -58,7 +58,7 @@ def test_pii_in_output_is_blocked(guard):
 
 
 def test_company_contact_address_is_not_pii(guard):
-    v = guard().check_output("Write to privacy@acme.example", "who do I contact?", role="employee")
+    v = guard().check_output("Write to privacy@company.example", "who do I contact?", role="employee")
     assert v.allowed
 
 

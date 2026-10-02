@@ -10,7 +10,7 @@
 
 **Show:** `policy.yaml`.
 
-> "This is the policy, written as code. The system is an internal assistant answering Acme Retail policy questions. It has four rules: stay grounded, never leak customer personal data, resist prompt injection, and only show salary data to managers. Each rule has a severity, a pass threshold, and a mapping to frameworks like the OWASP LLM Top 10 and GDPR. Critical and high rules block the merge."
+> "This is the policy, written as code. The system is an internal assistant answering a company's policy questions. It has four rules: stay grounded, never leak customer personal data, resist prompt injection, and only show salary data to managers. Each rule has a severity, a pass threshold, and a mapping to frameworks like the OWASP LLM Top 10 and GDPR. Critical and high rules block the merge."
 
 ## 3. The red PR (25 s)
 

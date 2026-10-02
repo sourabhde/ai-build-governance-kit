@@ -26,6 +26,8 @@ SOURCES = {
     "generated": ROOT / "tests" / "generated" / "runtime_cases.yaml",
 }
 OUT_PATH = ROOT / "dashboard" / "index.html"
+TABS = [("architecture", "How it works"), ("systems", "Systems"), ("rules", "Rules"), ("history", "History"),
+        ("waivers", "Waivers"), ("events", "Runtime events"), ("feedback", "Feedback loop"), ("evidence", "Evidence")]
 
 ICONS = {"PASS": "✓", "PASSED": "✓", "FAIL": "✕", "BLOCKED": "✕", "WARN": "!", "WAIVED": "◐",
          "blocked": "✕", "flagged": "!", "logged": "i", "valid": "✓", "expired": "✕", "invalid": "✕"}
@@ -45,17 +47,40 @@ def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
 
 
+def run_from_evidence(ev: dict) -> dict:
+    """The same shape as a history line, for when only evidence.json exists."""
+    return {"timestamp": ev["timestamp"], "commit": ev["git_commit"], "working_tree_clean": None,
+            "policy_sha256": ev["policy_sha256"], "gate": ev["gate"], "label": "latest evidence",
+            "rules": {r["rule"]: {k: r[k] for k in ("pass_rate", "result", "passed", "total")} for r in ev["rules"]},
+            "tests": ev.get("tests", [])}
+
+
+def group_events(events: list[dict]) -> list[dict]:
+    """One row per event key (same rule, system, input and role), newest first, with where it was seen."""
+    groups = {}
+    for e in events:
+        key = event_key(e)
+        g = groups.setdefault(key, {**e, "key": key, "sources": set(), "count": 0})
+        g["sources"].add(e["_source"])
+        g["count"] += 1
+        if e["timestamp"] > g["timestamp"]:
+            g.update({k: e[k] for k in ("timestamp", "latency_ms", "action", "gate_tier")})
+    return sorted(groups.values(), key=lambda g: g["timestamp"], reverse=True)
+
+
 def load(sources: dict) -> dict:
     policy_bytes = sources["policy"].read_bytes()
     events = [{**e, "_source": "sample"} for e in read_jsonl(sources["sample_events"])]
     events += [{**e, "_source": "live"} for e in read_jsonl(sources["live_events"])]
+    evidence = json.loads(sources["evidence"].read_text()) if sources["evidence"].exists() else None
+    runs = read_jsonl(sources["history"]) or ([run_from_evidence(evidence)] if evidence else [])
     generated = yaml.safe_load(sources["generated"].read_text()) if sources["generated"].exists() else None
     return {
         "policy": yaml.safe_load(policy_bytes),
         "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
-        "evidence": json.loads(sources["evidence"].read_text()) if sources["evidence"].exists() else None,
-        "history": read_jsonl(sources["history"]),
-        "events": sorted(events, key=lambda e: e["timestamp"], reverse=True),
+        "evidence": evidence,
+        "runs": runs,
+        "events": group_events(events),
         "generated": generated or [],
         "found": {name: path.exists() for name, path in sources.items()},
         "paths": {name: str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
@@ -84,33 +109,72 @@ def short(sha: str | None, n: int = 12) -> str:
     return escape((sha or "")[:n]) or "–"
 
 
-def section(sid: str, title: str, body: str, intro: str = "") -> str:
+def clip(text: str, limit: int = 90) -> str:
+    """Shorten at a word boundary with an ellipsis; the full text stays available on hover."""
+    if len(text) <= limit:
+        return escape(text)
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(" ,.;:")
+    return f'<span title="{escape(text)}">{escape(cut)}…</span>'
+
+
+def when(ts: str) -> str:
+    return escape(ts.replace("T", " ").replace("+00:00", ""))
+
+
+def panel(sid: str, title: str, body: str, intro: str = "") -> str:
     intro_html = f'<p class="intro">{intro}</p>' if intro else ""
-    return f'<section id="{sid}"><h2>{escape(title)}</h2>{intro_html}{body}</section>'
+    return (f'<section id="panel-{sid}" class="panel" role="tabpanel" aria-labelledby="tab-{sid}" tabindex="0">'
+            f'<h2>{escape(title)}</h2>{intro_html}{body}</section>')
 
 
 def missing(what: str, how: str) -> str:
     return f'<p class="empty">No {escape(what)} yet. {how}</p>'
 
 
-# ---------- sections ----------
+def per_run(d: dict, render_one) -> str:
+    """Render one variant per recorded run; the run selector shows one at a time (latest by default)."""
+    if not d["runs"]:
+        return render_one(None, None)
+    last = len(d["runs"]) - 1
+    return "".join(f'<div class="run-view" data-run="{i}"{"" if i == last else " hidden"}>{render_one(run, i)}</div>'
+                   for i, run in enumerate(d["runs"]))
+
+
+def run_name(run: dict, i: int) -> str:
+    return f'#{i + 1} {run.get("label", "")} ({when(run["timestamp"])} UTC)'
+
+
+# ---------- header with run selector ----------
 
 def header(d: dict) -> str:
-    ev, policy = d["evidence"], d["policy"]
-    if not ev:
-        status = '<p class="empty">No gate run found. Run the eval and <code>gate.py</code>, then rebuild.</p>'
-        facts = []
-    else:
-        status = f'<div class="gate">{badge(ev["gate"], "Gate " + ev["gate"])}</div>'
-        same = ev["policy_sha256"] == d["policy_sha256"]
-        facts = [("Commit", short(ev["git_commit"], 7)),
-                 ("Policy hash", short(ev["policy_sha256"]) + ("" if same else " ⚠ differs from current policy.yaml")),
-                 ("Last run (UTC)", escape(ev["timestamp"].replace("T", " ").replace("+00:00", ""))),
-                 ("Tests", str(len(ev.get("tests", []))))]
-    facts = [("Systems", str(len(policy.get("systems") or []))), ("Rules", str(len(policy["rules"])))] + facts
-    items = "".join(f'<div class="fact"><span class="k">{k}</span><span class="v">{v}</span></div>' for k, v in facts)
-    return f'<header class="strip"><h1>AI Build Governance Kit</h1>{status}<div class="facts">{items}</div></header>'
+    policy, runs = d["policy"], d["runs"]
+    counts = [("Systems", str(len(policy.get("systems") or []))), ("Rules", str(len(policy["rules"])))]
 
+    def one(run, i):
+        if run is None:
+            return '<p class="empty">No gate run found. Run the eval and <code>gate.py</code>, then rebuild.</p>'
+        past = (f'<p class="pastnote" role="status">Showing past run {escape(run_name(run, i))}, not the latest.</p>'
+                if i != len(runs) - 1 else "")
+        same = run["policy_sha256"] == d["policy_sha256"]
+        facts = counts + [
+            ("Commit", short(run["commit"], 7) + ("" if run.get("working_tree_clean") is not False else " (uncommitted changes)")),
+            ("Policy hash", short(run["policy_sha256"]) + ("" if same else " ⚠ differs from current policy.yaml")),
+            ("Run time (UTC)", when(run["timestamp"])),
+            ("Tests", str(len(run.get("tests") or [])) or "–")]
+        items = "".join(f'<div class="fact"><span class="k">{k}</span><span class="v">{v}</span></div>' for k, v in facts)
+        return f'{past}<div class="gate">{badge(run["gate"], "Gate " + run["gate"])}</div><div class="facts">{items}</div>'
+
+    selector = ""
+    if len(runs) > 1:
+        options = "".join(f'<option value="{i}"{" selected" if i == len(runs) - 1 else ""}>'
+                          f'{escape(run_name(r, i))}{" (latest)" if i == len(runs) - 1 else ""}</option>'
+                          for i, r in enumerate(runs))
+        selector = (f'<label class="runpick">Run shown in header, Systems and Rules: '
+                    f'<select id="run">{options}</select></label>')
+    return f'<header class="strip"><h1>AI Build Governance Kit</h1>{selector}{per_run(d, one)}</header>'
+
+
+# ---------- tabs ----------
 
 def architecture() -> str:
     def box(x, y, w, title, sub, cls="node"):
@@ -148,102 +212,94 @@ Every step carries the system ID, rule ID and policy hash.</desc>
 <g class="shared"><rect x="20" y="400" width="1060" height="54" rx="10"/>
 <text x="550" y="434" class="t1">Shared on every step:  system ID  ·  rule ID  ·  policy hash</text></g>
 </svg>"""
-    return section("architecture", "How it works", svg,
-                   "One policy drives both halves. The same IDs and policy hash link every test, gate decision, "
-                   "runtime event and generated test back to the exact rule and policy version.")
-
-
-def rows_by_rule(d: dict) -> dict:
-    return {r["rule"]: r for r in (d["evidence"] or {}).get("rules", [])}
+    return panel("architecture", "How it works", svg,
+                 "One policy drives both halves. The same IDs and policy hash link every test, gate decision, "
+                 "runtime event and generated test back to the exact rule and policy version.")
 
 
 def systems(d: dict) -> str:
-    rows, cards = rows_by_rule(d), []
-    for s in d["policy"].get("systems") or []:
-        rules = [r for r in d["policy"]["rules"] if s["id"] in (r.get("applies_to") or [])]
-        results = [rows[r["id"]]["result"] for r in rules if r["id"] in rows]
-        if not results:
-            status = badge("logged", "No results yet")
-        elif "FAIL" in results:
-            status = badge("BLOCKED")
-        elif "WAIVED" in results:
-            status = badge("WAIVED", "PASSED with waiver")
-        else:
-            status = badge("PASSED")
-        items = "".join(f'<li>{escape(r["id"])} {badge(rows[r["id"]]["result"]) if r["id"] in rows else ""}</li>'
-                        for r in rules)
-        cards.append(f'<article class="card"><h3>{escape(s["id"])}</h3>{status}'
-                     f'<p>{escape(s.get("purpose", ""))}</p>'
-                     f'<p><strong>EU AI Act risk tier:</strong> {escape(str(s.get("risk_tier", "–")))}</p>'
-                     f'<p><strong>Rules that apply:</strong></p><ul>{items}</ul></article>')
-    return section("systems", "Systems", f'<div class="cards">{"".join(cards)}</div>')
+    def one(run, i):
+        results = (run or {}).get("rules", {})
+        cards = []
+        for s in d["policy"].get("systems") or []:
+            rules = [r for r in d["policy"]["rules"] if s["id"] in (r.get("applies_to") or [])]
+            got = [results[r["id"]]["result"] for r in rules if r["id"] in results]
+            if not got:
+                status = badge("logged", "No results yet")
+            elif "FAIL" in got:
+                status = badge("BLOCKED")
+            elif "WAIVED" in got:
+                status = badge("WAIVED", "PASSED with waiver")
+            else:
+                status = badge("PASSED")
+            items = "".join(f'<li>{escape(r["id"])} {badge(results[r["id"]]["result"]) if r["id"] in results else "<em>not in this run</em>"}</li>'
+                            for r in rules)
+            cards.append(f'<article class="card"><h3>{escape(s["id"])}</h3>{status}'
+                         f'<p>{escape(s.get("purpose", ""))}</p>'
+                         f'<p><strong>EU AI Act risk tier:</strong> {escape(str(s.get("risk_tier", "–")))}</p>'
+                         f'<p><strong>Rules that apply:</strong></p><ul>{items}</ul></article>')
+        return f'<div class="cards">{"".join(cards)}</div>'
+    return panel("systems", "Systems", per_run(d, one), "Status for the run selected in the header.")
 
 
 def rules(d: dict) -> str:
-    rows, tests = rows_by_rule(d), (d["evidence"] or {}).get("tests", [])
-    body = []
-    for i, rule in enumerate(d["policy"]["rules"]):
-        rid, r = rule["id"], rows.get(rule["id"])
-        rate = (f'{bar(r["pass_rate"])} {pct(r["pass_rate"])} ({r["passed"]}/{r["total"]})' if r else "not run")
-        mine = [t for t in tests if t["rule"] == rid]
-        test_items = "".join(
-            f'<li>{badge("PASS" if t["passed"] else "FAIL")} {escape(t["description"])}'
-            f'{" <em>(generated from a runtime event)</em>" if t.get("source") == "runtime" else ""}'
-            f'{"<br><small>" + escape(t["reason"]) + "</small>" if t.get("reason") else ""}</li>' for t in mine)
-        body.append(
-            f'<tr><td><button class="expand" aria-expanded="false" aria-controls="tests-{i}">▸ {escape(rid)}</button>'
-            f'<br><small>{escape(rule.get("description", ""))}</small></td>'
-            f'<td>{escape(", ".join(rule.get("applies_to") or []))}</td>'
-            f'<td>{escape(rule.get("gate_tier", "high"))}</td>'
-            f'<td>{escape(rule.get("severity", ""))}</td>'
-            f'<td>{rule.get("pass_threshold")}</td><td class="rate">{rate}</td>'
-            f'<td>{badge(r["result"]) if r else "–"}</td>'
-            f'<td><small>{escape("; ".join(rule.get("maps_to") or []))}</small></td></tr>'
-            f'<tr id="tests-{i}" class="tests" hidden><td colspan="8">'
-            f'{"<ul>" + test_items + "</ul>" if mine else "No test results recorded for this rule."}</td></tr>')
-    table = ('<div class="scroll"><table><thead><tr><th>Rule</th><th>System</th><th>Gate tier</th>'
-             '<th>Severity <small>(reporting only)</small></th><th>Threshold</th><th>Pass rate</th><th>Result</th>'
-             f'<th>Framework mapping</th></tr></thead><tbody>{"".join(body)}</tbody></table></div>')
-    return section("rules", "Rules", table, "Gate tier decides blocking; severity is a label for reporting only. "
-                   "Select a rule to see its test cases and results from the latest run.")
+    def one(run, ri):
+        results, tests = (run or {}).get("rules", {}), (run or {}).get("tests") or []
+        body = []
+        for i, rule in enumerate(d["policy"]["rules"]):
+            rid, r = rule["id"], results.get(rule["id"])
+            rate = (f'{bar(r["pass_rate"])} {pct(r["pass_rate"])}'
+                    f'{" (" + str(r["passed"]) + "/" + str(r["total"]) + ")" if "total" in r else ""}') if r else "not run"
+            mine = [t for t in tests if t.get("rule") == rid]
+            test_items = "".join(
+                f'<li>{badge("PASS" if t["passed"] else "FAIL")} {escape(t["description"])}'
+                f'{" <em>(generated from a runtime event)</em>" if t.get("source") == "runtime" else ""}'
+                f'{"<br><small>" + escape(t["reason"]) + "</small>" if t.get("reason") else ""}</li>' for t in mine)
+            tid = f"tests-{ri}-{i}"
+            body.append(
+                f'<tr><td><button class="expand" type="button" aria-expanded="false" aria-controls="{tid}">'
+                f'<span aria-hidden="true">▸</span> {escape(rid)}</button>'
+                f'<br><small>{escape(rule.get("description", ""))}</small></td>'
+                f'<td>{escape(", ".join(rule.get("applies_to") or []))}</td>'
+                f'<td>{escape(rule.get("gate_tier", "high"))}</td>'
+                f'<td>{escape(rule.get("severity", ""))}</td>'
+                f'<td>{rule.get("pass_threshold")}</td><td class="rate">{rate}</td>'
+                f'<td>{badge(r["result"]) if r else "–"}</td>'
+                f'<td><small>{escape("; ".join(rule.get("maps_to") or []))}</small></td></tr>'
+                f'<tr id="{tid}" class="tests" hidden><td colspan="8">'
+                f'{"<ul>" + test_items + "</ul>" if mine else "No test details recorded for this rule in this run."}</td></tr>')
+        return ('<div class="scroll"><table><thead><tr><th>Rule</th><th>System</th><th>Gate tier</th>'
+                '<th>Severity <small>(reporting only)</small></th><th>Threshold</th><th>Pass rate</th><th>Result</th>'
+                f'<th>Framework mapping</th></tr></thead><tbody>{"".join(body)}</tbody></table></div>')
+    return panel("rules", "Rules", per_run(d, one),
+                 "Gate tier decides blocking; severity is a label for reporting only. Select a rule to see its test "
+                 "cases and results for the run selected in the header.")
 
 
 def history(d: dict) -> str:
-    runs = d["history"]
+    runs = d["runs"]
     if not runs:
-        return section("history", "Run history", missing("recorded runs", "Each <code>gate.py</code> run adds one."))
-    rule_ids = [r["id"] for r in d["policy"]["rules"]]
-    w, h, gap = 64, 90, 22
-    charts = []
-    for rid in rule_ids:
-        bars = []
-        for i, run in enumerate(runs):
-            v = (run["rules"].get(rid) or {}).get("pass_rate")
-            x = i * (w + gap)
-            if v is None:
-                bars.append(f'<text x="{x + w / 2}" y="{h - 4}" class="t3">n/a</text>')
-                continue
-            bh = max(2, v * h)
-            res = run["rules"][rid]["result"]
-            bars.append(f'<rect x="{x}" y="{h - bh}" width="{w}" height="{bh}" class="hbar {TONE.get(res, "info")}"/>'
-                        f'<text x="{x + w / 2}" y="{h + 20}" class="t3">{ICONS.get(res, "")} {pct(v)}</text>')
-        width = len(runs) * (w + gap)
-        charts.append(f'<div class="minichart"><div class="mlabel">{escape(rid)}</div>'
-                      f'<svg viewBox="0 -4 {width} {h + 28}" width="{width}" height="{h + 28}" role="img" '
-                      f'aria-label="{escape(rid)} pass rate per run">{"".join(bars)}</svg></div>')
-    runs_head = "".join(f'<span class="runlabel" style="width:{w + gap}px">#{i + 1}</span>' for i in range(len(runs)))
-    table_rows = "".join(
-        f'<tr><td>#{i + 1}</td><td>{escape(r["timestamp"].replace("T", " ").replace("+00:00", ""))}</td>'
-        f'<td>{escape(r.get("label", ""))}</td><td>{short(r["commit"], 7)}'
-        f'{"" if r.get("working_tree_clean") else " <small>(uncommitted changes)</small>"}</td>'
+        return panel("history", "Run history", missing("recorded runs", "Each <code>gate.py</code> run adds one."))
+    head = "".join(f'<th scope="col">#{i + 1}<br><small>{escape(r.get("label", ""))}</small></th>' for i, r in enumerate(runs))
+    rows = []
+    for rule in d["policy"]["rules"]:
+        cells = []
+        for r in runs:
+            v = r["rules"].get(rule["id"])
+            cells.append(f'<td class="cell">{badge(v["result"], pct(v["pass_rate"]))}</td>' if v else '<td class="cell">n/a</td>')
+        rows.append(f'<tr><th scope="row">{escape(rule["id"])}</th>{"".join(cells)}</tr>')
+    gate_row = "".join(f'<td class="cell">{badge(r["gate"])}</td>' for r in runs)
+    grid = (f'<div class="scroll"><table class="grid"><thead><tr><th>Rule</th>{head}</tr></thead>'
+            f'<tbody>{"".join(rows)}<tr class="gaterow"><th scope="row">Gate</th>{gate_row}</tr></tbody></table></div>')
+    run_rows = "".join(
+        f'<tr><td>#{i + 1}</td><td>{when(r["timestamp"])}</td><td>{escape(r.get("label", ""))}</td>'
+        f'<td>{short(r["commit"], 7)}{" <small>(uncommitted changes)</small>" if r.get("working_tree_clean") is False else ""}</td>'
         f'<td>{short(r["policy_sha256"])}</td><td>{badge(r["gate"])}</td>'
         f'<td>{escape(", ".join(k for k, v in r["rules"].items() if v["result"] == "FAIL") or "none")}</td></tr>'
         for i, r in enumerate(runs))
-    body = (f'<div class="chart"><div class="minichart head"><div class="mlabel">Run</div><div>{runs_head}</div></div>'
-            f'{"".join(charts)}</div>'
-            '<div class="scroll"><table><thead><tr><th>Run</th><th>Time (UTC)</th><th>Label</th><th>Commit</th>'
-            f'<th>Policy hash</th><th>Gate</th><th>Failing rules</th></tr></thead><tbody>{table_rows}</tbody></table></div>')
-    return section("history", "Run history", body, "Pass rate per rule for every recorded gate run.")
+    table = ('<h3>Runs</h3><div class="scroll"><table><thead><tr><th>Run</th><th>Time (UTC)</th><th>Label</th>'
+             f'<th>Commit</th><th>Policy hash</th><th>Gate</th><th>Failing rules</th></tr></thead><tbody>{run_rows}</tbody></table></div>')
+    return panel("history", "Run history", grid + table, "Pass rate per rule for every recorded gate run.")
 
 
 def waivers(d: dict, today: date) -> str:
@@ -266,22 +322,27 @@ def waivers(d: dict, today: date) -> str:
     else:
         body = ('<div class="scroll"><table><thead><tr><th>Rule</th><th>Owner</th><th>Approver</th><th>Reason</th>'
                 f'<th>Expires</th><th>Days left</th><th>Status</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
-    return section("waivers", "Waivers", body)
+    return panel("waivers", "Waivers", body)
+
+
+def source_label(sources: set) -> str:
+    return " + ".join(s for s in ("sample", "live") if s in sources)
 
 
 def events(d: dict) -> str:
     if not d["events"]:
-        return section("events", "Runtime events", missing("runtime events", "Run <code>python -m runtime.simulate</code>."))
+        return panel("events", "Runtime events", missing("runtime events", "Run <code>python -m runtime.simulate</code>."))
     rows = "".join(
-        f'<tr><td>{escape(e["timestamp"].replace("T", " ").replace("+00:00", ""))}</td>'
-        f'<td>{"sample" if e["_source"] == "sample" else "live"}</td><td>{escape(e["system_id"])}</td>'
-        f'<td>{escape(e["rule_id"])}</td><td>{badge(e["action"])}</td><td>{e["latency_ms"]:.3f}</td>'
-        f'<td><small>{escape(e["input"])}</small></td></tr>' for e in d["events"])
-    body = ('<div class="scroll"><table><thead><tr><th>Time (UTC)</th><th>Source</th><th>System</th><th>Rule</th>'
+        f'<tr><td>{when(e["timestamp"])}</td><td>{source_label(e["sources"])}'
+        f'{" <small>(seen " + str(e["count"]) + " times)</small>" if e["count"] > 1 else ""}</td>'
+        f'<td>{escape(e["system_id"])}</td><td>{escape(e["rule_id"])}</td><td>{badge(e["action"])}</td>'
+        f'<td>{e["latency_ms"]:.3f}</td><td><small>{escape(e["input"])}</small></td></tr>' for e in d["events"])
+    body = ('<div class="scroll"><table><thead><tr><th>Latest (UTC)</th><th>Source</th><th>System</th><th>Rule</th>'
             f'<th>Action</th><th>Guard ms</th><th>Input (redacted)</th></tr></thead><tbody>{rows}</tbody></table></div>')
-    return section("events", "Runtime events", body,
-                   "What the runtime guard caught. Inputs are stored with personal data redacted; outputs are never stored. "
-                   "\"sample\" rows come from the committed synthetic file, \"live\" rows from this machine's log.")
+    return panel("events", "Runtime events", body,
+                 "What the runtime guard caught, one row per distinct event. Inputs are stored with personal data "
+                 "redacted; outputs are never stored. \"sample\" is the committed synthetic file, \"live\" is this "
+                 "machine's log.")
 
 
 def feedback(d: dict) -> str:
@@ -291,25 +352,24 @@ def feedback(d: dict) -> str:
     for e in d["events"]:
         if e["action"] not in ("blocked", "flagged"):
             continue
-        key = event_key(e)
-        case, test = cases.get(key), tests.get(key)
-        rows.append(f'<tr><td>{escape(e["rule_id"])}<br><small>{escape(e["system_id"])} · {escape(e["input"][:80])}</small></td>'
-                    f'<td aria-hidden="true">→</td>'
+        case, test = cases.get(e["key"]), tests.get(e["key"])
+        rows.append(f'<tr><td>{escape(e["rule_id"])}<br><small>{escape(e["system_id"])} · {source_label(e["sources"])} · '
+                    f'{clip(e["input"])}</small></td><td aria-hidden="true">→</td>'
                     f'<td>{escape(case["description"]) if case else "<em>no test generated yet (run runtime.to_tests)</em>"}</td>'
                     f'<td aria-hidden="true">→</td>'
                     f'<td>{badge("PASS" if test["passed"] else "FAIL") if test else "<em>not in the latest run</em>"}</td></tr>')
     if not rows:
-        return section("feedback", "Feedback loop", missing("blocked or flagged events", ""))
+        return panel("feedback", "Feedback loop", missing("blocked or flagged events", ""))
     body = ('<div class="scroll"><table><thead><tr><th>Runtime event</th><th></th><th>Generated test</th><th></th>'
             f'<th>Latest result</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
-    return section("feedback", "Feedback loop", body,
-                   "Each event caught at runtime becomes a regression test (matched by its event key), so CI keeps checking it.")
+    return panel("feedback", "Feedback loop", body,
+                 "Each event caught at runtime becomes a regression test (matched by its event key), so CI keeps checking it.")
 
 
 def evidence(d: dict) -> str:
     ev = d["evidence"]
     if not ev:
-        return section("evidence", "Evidence", missing("evidence file", "Run the eval and <code>gate.py</code>."))
+        return panel("evidence", "Evidence", missing("evidence file", "Run the eval and <code>gate.py</code>."))
     fields = [("Gate", badge(ev["gate"])), ("Timestamp (UTC)", escape(ev["timestamp"])),
               ("Commit", escape(ev["git_commit"])), ("Policy SHA-256", escape(ev["policy_sha256"])),
               ("Answer model", escape(ev.get("answer_model", "–"))), ("Judge model", escape(ev.get("judge_model", "–"))),
@@ -318,8 +378,9 @@ def evidence(d: dict) -> str:
               ("Problems", escape("; ".join(ev.get("problems", [])) or "none"))]
     dl = "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in fields)
     raw = escape(json.dumps(ev, indent=2))
-    body = (f'<dl class="kv">{dl}</dl><details><summary>View raw JSON</summary><pre class="code">{raw}</pre></details>')
-    return section("evidence", "Evidence", body, f'From <code>{escape(d["paths"]["evidence"])}</code>, written by the latest gate run.')
+    body = f'<dl class="kv">{dl}</dl><details><summary>View raw JSON</summary><pre class="code">{raw}</pre></details>'
+    return panel("evidence", "Evidence", body,
+                 f'From <code>{escape(d["paths"]["evidence"])}</code>, written by the latest gate run.')
 
 
 def sources_footer(d: dict, built: datetime) -> str:
@@ -342,27 +403,35 @@ CSS = """
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:19px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 main{max-width:1240px;margin:0 auto;padding:0 20px 40px}
-h1{font-size:2.1rem;margin:0 0 12px}h2{font-size:1.65rem;margin:0 0 8px;padding-top:8px}h3{margin:0 0 8px;font-size:1.25rem}
-section{border-top:2px solid var(--line);padding:22px 0}
+h1{font-size:2.1rem;margin:0 0 12px}h2{font-size:1.65rem;margin:0 0 8px}h3{margin:16px 0 8px;font-size:1.25rem}
+.panel{padding:22px 0}.panel:focus-visible{outline-offset:6px}
 .intro{color:var(--muted);margin:0 0 14px;max-width:70ch}
-nav{position:sticky;top:0;background:var(--bg);border-bottom:2px solid var(--line);z-index:2}
-nav .in{max-width:1240px;margin:0 auto;padding:8px 20px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
-nav a{color:var(--accent);font-weight:600;text-decoration:none}nav a:hover,nav a:focus{text-decoration:underline}
-#theme{margin-left:auto;font:inherit;font-size:.9rem;padding:4px 12px;border:2px solid var(--line);border-radius:8px;
-background:var(--card);color:var(--fg);cursor:pointer}
-.strip{padding:24px 0 18px}
+.strip{padding:22px 0 14px;border-bottom:2px solid var(--line)}
+.runpick{display:block;font-weight:700;margin-bottom:12px}
+.runpick select{font:inherit;font-weight:400;padding:4px 8px;margin-left:6px;border:2px solid var(--line);border-radius:8px;
+background:var(--card);color:var(--fg);max-width:100%}
+.pastnote{border:2px dashed var(--warn);color:var(--warn);font-weight:700;padding:8px 12px;border-radius:8px;margin:0 0 12px}
 .gate .badge{font-size:1.6rem;padding:6px 18px}
 .facts{display:flex;flex-wrap:wrap;gap:12px;margin-top:16px}
 .fact{background:var(--card);border:2px solid var(--line);border-radius:10px;padding:8px 14px;min-width:130px}
 .fact .k{display:block;color:var(--muted);font-size:.85rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
 .fact .v{font-size:1.2rem;font-weight:700;font-family:ui-monospace,Menlo,Consolas,monospace}
+.tabbar{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:2px solid var(--line);
+position:sticky;top:0;background:var(--bg);z-index:2}[role=tablist]{display:flex;flex-wrap:wrap;gap:6px}
+[role=tab]{font:inherit;font-weight:700;font-size:1rem;padding:8px 14px;border:2px solid var(--line);border-radius:10px;
+background:var(--card);color:var(--fg);cursor:pointer}
+[role=tab][aria-selected=true]{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+#theme{margin-left:auto;font:inherit;font-size:.9rem;padding:6px 12px;border:2px solid var(--line);border-radius:10px;
+background:var(--card);color:var(--fg);cursor:pointer}
 .badge{display:inline-flex;align-items:center;gap:6px;font-weight:700;border:2px solid currentColor;border-radius:999px;
 padding:1px 10px;white-space:nowrap;font-size:.95rem}
 .pass{color:var(--pass)}.fail{color:var(--fail)}.warn{color:var(--warn)}.waived{color:var(--waived)}.info{color:var(--info)}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:1rem}
 th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid var(--line)}
-th{background:var(--card);font-weight:700}
+thead th{background:var(--card);font-weight:700}
+.grid td.cell{text-align:center;vertical-align:middle}.grid thead th{text-align:center}.grid thead th:first-child{text-align:left}
+.grid tbody th{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.95rem}.gaterow th,.gaterow td{border-top:2px solid var(--line)}
 small{color:var(--muted);font-size:.85rem}
 .bar{display:inline-block;width:90px;height:14px;background:var(--barbg);border:1px solid var(--line);border-radius:4px;
 vertical-align:middle;overflow:hidden}.bar span{display:block;height:100%;background:var(--accent)}
@@ -380,44 +449,60 @@ tr.tests td{background:var(--card)}tr.tests ul{margin:0;padding-left:0;list-styl
 .arch text{fill:currentColor;text-anchor:middle}.arch .t1{font-size:21px;font-weight:700}.arch .t2{font-size:16px;fill:var(--muted)}
 .arch .t3{font-size:15px;font-weight:600;fill:var(--accent)}.arch .lane{font-size:15px;font-weight:700;text-anchor:start;fill:var(--muted);letter-spacing:.06em}
 .arch .edge{fill:none;stroke:var(--fg);stroke-width:2.5}.arch .arrowhead{fill:var(--fg)}
-.chart{margin-bottom:18px}
-.minichart{display:flex;align-items:flex-end;gap:16px;margin:6px 0}
-.minichart.head{align-items:center}.mlabel{width:230px;font-weight:700;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.95rem;padding-bottom:20px}
-.minichart.head .mlabel{padding-bottom:0}.runlabel{display:inline-block;text-align:center;font-weight:700;padding-right:22px}
-.minichart svg text{fill:currentColor;text-anchor:middle}.minichart .t3{font-size:14px;font-weight:700}
-.hbar.pass{fill:var(--pass)}.hbar.fail{fill:var(--fail)}.hbar.warn{fill:var(--warn)}.hbar.waived{fill:var(--waived)}
 .empty{font-weight:700}
 .code{background:var(--card);border:2px solid var(--line);border-radius:8px;padding:12px;overflow:auto;font-size:.85rem;max-height:520px}
 details summary{cursor:pointer;font-weight:700;color:var(--accent);margin:10px 0}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;margin:0}.kv dt{font-weight:700}.kv dd{margin:0;word-break:break-all}
+span[title]{text-decoration:underline dotted;cursor:help}
 footer{border-top:2px solid var(--line);padding-top:16px;color:var(--muted);font-size:.9rem}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 """
 
 JS = """
+(function(){
+var tabs=[].slice.call(document.querySelectorAll('[role=tab]'));
+var ids=tabs.map(function(t){return t.id.slice(4)});
+function show(id,focus){
+  if(ids.indexOf(id)<0)id=ids[0];
+  tabs.forEach(function(t){var on=t.id==='tab-'+id;t.setAttribute('aria-selected',String(on));t.tabIndex=on?0:-1;
+    document.getElementById('panel-'+t.id.slice(4)).hidden=!on;if(on&&focus)t.focus();});
+}
+function fromHash(){return decodeURIComponent(location.hash.slice(1))}
+tabs.forEach(function(t,i){
+  t.addEventListener('click',function(){show(ids[i],false);location.hash=ids[i]});
+  t.addEventListener('keydown',function(e){
+    var j={ArrowRight:i+1,ArrowLeft:i-1,Home:0,End:tabs.length-1}[e.key];
+    if(j===undefined)return;e.preventDefault();j=(j+tabs.length)%tabs.length;
+    location.hash=ids[j];show(ids[j],true);});
+});
+window.addEventListener('hashchange',function(){show(fromHash(),false)});
+show(fromHash(),false);
 document.querySelectorAll('.expand').forEach(function(b){b.addEventListener('click',function(){
-var r=document.getElementById(b.getAttribute('aria-controls'));var open=b.getAttribute('aria-expanded')==='true';
-b.setAttribute('aria-expanded',String(!open));r.hidden=open;b.firstChild.textContent=(open?'▸ ':'▾ ')+b.textContent.slice(2);});});
+  var r=document.getElementById(b.getAttribute('aria-controls'));var open=b.getAttribute('aria-expanded')==='true';
+  b.setAttribute('aria-expanded',String(!open));r.hidden=open;b.firstChild.textContent=open?'▸':'▾';});});
+var pick=document.getElementById('run');
+if(pick)pick.addEventListener('change',function(){
+  document.querySelectorAll('.run-view').forEach(function(v){v.hidden=v.getAttribute('data-run')!==pick.value});});
 var root=document.documentElement,btn=document.getElementById('theme');
 function set(t){root.setAttribute('data-theme',t);btn.textContent=(t==='dark'?'☀ Light mode':'☾ Dark mode');
-try{localStorage.setItem('theme',t)}catch(e){}}
+  try{localStorage.setItem('theme',t)}catch(e){}}
 var saved=null;try{saved=localStorage.getItem('theme')}catch(e){}
 set(saved||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'));
 btn.addEventListener('click',function(){set(root.getAttribute('data-theme')==='dark'?'light':'dark')});
+})();
 """
 
 
 def render(d: dict, now: datetime) -> str:
-    nav = "".join(f'<a href="#{i}">{t}</a>' for i, t in [
-        ("architecture", "How it works"), ("systems", "Systems"), ("rules", "Rules"), ("history", "History"),
-        ("waivers", "Waivers"), ("events", "Runtime events"), ("feedback", "Feedback loop"), ("evidence", "Evidence")])
-    parts = [header(d), architecture(), systems(d), rules(d), history(d), waivers(d, now.date()), events(d),
-             feedback(d), evidence(d), sources_footer(d, now)]
+    tablist = "".join(f'<button type="button" role="tab" id="tab-{i}" aria-controls="panel-{i}" aria-selected="false" '
+                      f'tabindex="-1">{escape(t)}</button>' for i, t in TABS)
+    panels = [architecture(), systems(d), rules(d), history(d), waivers(d, now.date()), events(d), feedback(d), evidence(d)]
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>AI Build Governance Kit</title><style>{CSS}</style></head><body>'
-            f'<nav aria-label="Sections"><div class="in">{nav}<button id="theme" type="button">Theme</button></div></nav>'
-            f'<main>{"".join(parts)}</main><script>{JS}</script></body></html>')
+            f'<title>AI Build Governance Kit</title><style>{CSS}</style></head><body><main>'
+            f'{header(d)}<div class="tabbar"><div role="tablist" aria-label="Dashboard sections">{tablist}</div>'
+            f'<button id="theme" type="button">Theme</button></div>'
+            f'{"".join(panels)}{sources_footer(d, now)}</main><script>{JS}</script></body></html>')
 
 
 def main(sources: dict = SOURCES, out_path: Path = OUT_PATH) -> Path:

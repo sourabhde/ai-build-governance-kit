@@ -124,8 +124,10 @@ def main(results_path: str, policy_path: str = "policy.yaml", label: str = "loca
     # 2. Evidence file: what was tested, against which policy version, with what result.
     sha = os.environ.get("GITHUB_SHA") or subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    # Clean = no uncommitted changes to tracked files, ignoring the history file this gate itself appends to.
     clean = bool(os.environ.get("GITHUB_SHA")) or not subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip()
+        ["git", "status", "--porcelain", "--untracked-files=no", "--", ".", ":!evidence/history.jsonl"],
+        capture_output=True, text=True).stdout.strip()
     tests = []  # one line per test; model outputs are never stored, failure reasons are PII-redacted
     for r in results:
         meta = r.get("testCase", {}).get("metadata") or r.get("metadata") or {}
@@ -151,7 +153,9 @@ def main(results_path: str, policy_path: str = "policy.yaml", label: str = "loca
     # Run history: one line per gate run, so trends can be shown later.
     history = {"timestamp": evidence["timestamp"], "commit": sha, "working_tree_clean": clean,
                "policy_sha256": evidence["policy_sha256"], "gate": verdict, "label": label,
-               "rules": {r["rule"]: {"pass_rate": r["pass_rate"], "result": r["result"]} for r in rows}}
+               "rules": {r["rule"]: {"pass_rate": r["pass_rate"], "result": r["result"], "passed": r["passed"],
+                                     "total": r["total"]} for r in rows},
+               "tests": [{k: t[k] for k in ("description", "rule", "source", "event_key", "passed")} for t in tests]}
     Path("evidence").mkdir(exist_ok=True)
     with open("evidence/history.jsonl", "a") as f:
         f.write(json.dumps(history) + "\n")
