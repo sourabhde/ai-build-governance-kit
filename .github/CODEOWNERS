@@ -4,3 +4,5 @@
 /promptfooconfig.yaml  @sourabhde
 /gate.py               @sourabhde
 /.github/workflows/    @sourabhde
+# The quoting assistant's discount limits (AUTO_LIMIT, APPROVAL_LIMIT) are enforced in agent/tools.py.
+/agent/                @sourabhde

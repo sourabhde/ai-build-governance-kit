@@ -65,7 +65,13 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
 
     tiers = {rule["id"]: rule.get("gate_tier", "high") for rule in policy["rules"]}  # no tier -> strictest
     waivers, problems = check_waivers(policy.get("waivers"), tiers, now.date())
-    block = bool(problems)  # an invalid or expired waiver fails the gate on its own
+    # Every rule must say which system(s) it governs, using IDs from the policy's systems list.
+    systems = {s["id"]: s for s in policy.get("systems") or []}
+    for rule in policy["rules"]:
+        applies = rule.get("applies_to") or []
+        if not applies or any(x not in systems for x in applies):
+            problems.append(f"rule {rule['id']} must apply to known systems; got {applies or 'none'}")
+    block = bool(problems)  # an invalid waiver or rule definition fails the gate on its own
     rows = []
     for rule in policy["rules"]:
         rid, n, tier = rule["id"], total[rule["id"]], tiers[rule["id"]]
@@ -83,7 +89,7 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
             result = "WARN"
         else:
             result, block = "FAIL", True
-        rows.append({"rule": rid, "gate_tier": tier, "severity": rule["severity"], "passed": passed[rid],
+        rows.append({"rule": rid, "systems": rule.get("applies_to") or [], "gate_tier": tier, "severity": rule["severity"], "passed": passed[rid],
                      "total": n, "pass_rate": round(rate, 3), "threshold": rule["pass_threshold"],
                      "result": result,
                      "waiver_owner": waiver["owner"] if waiver else None,
@@ -92,9 +98,9 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
     verdict = "BLOCKED" if block else "PASSED"
 
     # 1. Console table, then waiver notes
-    print(f"{'rule':<24}{'gate_tier':<11}{'severity':<10}{'pass rate':<14}{'threshold':<11}result")
+    print(f"{'rule':<24}{'system':<19}{'gate_tier':<11}{'severity':<10}{'pass rate':<14}{'threshold':<11}result")
     for r in rows:
-        print(f"{r['rule']:<24}{r['gate_tier']:<11}{r['severity']:<10}"
+        print(f"{r['rule']:<24}{','.join(r['systems']) or '-':<19}{r['gate_tier']:<11}{r['severity']:<10}"
               f"{f'{r['pass_rate']:.0%} ({r['passed']}/{r['total']})':<14}{r['threshold']:<11}{r['result']}")
     for r in rows:
         if r["result"] == "WAIVED":
@@ -111,13 +117,13 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
     evidence = {
         "timestamp": now.isoformat(timespec="seconds"),
         "git_commit": sha,
-        "system": policy["system"],
+        "systems": [{"id": s["id"], "risk_tier": s.get("risk_tier")} for s in systems.values()],
         "answer_model": policy["answer_model"],
         "judge_model": policy["judge_model"],
         "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
         "gate": verdict,
         "rules": rows,
-        "waiver_problems": problems,
+        "problems": problems,  # invalid waivers or rule definitions
     }
     Path("results").mkdir(exist_ok=True)
     Path("results/evidence.json").write_text(json.dumps(evidence, indent=2))
@@ -125,12 +131,13 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
     # 3. GitHub job summary (shown on the PR / run page), only when running in Actions.
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         lines = [f"## Governance gate: {'❌ BLOCKED' if block else '✅ PASSED'}", "",
-                 "| Rule | Gate tier | Severity | Pass rate | Threshold | Result |", "|---|---|---|---|---|---|"]
-        lines += [f"| {r['rule']} | {r['gate_tier']} | {r['severity']} | {r['pass_rate']:.0%} "
+                 "| Rule | System | Gate tier | Severity | Pass rate | Threshold | Result |",
+                 "|---|---|---|---|---|---|---|"]
+        lines += [f"| {r['rule']} | {', '.join(r['systems'])} | {r['gate_tier']} | {r['severity']} | {r['pass_rate']:.0%} "
                   f"({r['passed']}/{r['total']}) | {r['threshold']} | {r['result']} |" for r in rows]
         lines += [f"\n**Waived:** {r['rule']} by {r['waiver_owner']}, expires {r['waiver_expires']}"
                   for r in rows if r["result"] == "WAIVED"]
-        lines += [f"\n**Waiver problem:** {p}" for p in problems]
+        lines += [f"\n**Problem:** {p}" for p in problems]
         lines += ["", f"Policy `{evidence['policy_sha256'][:12]}` · answer model `{policy['answer_model']}` "
                       f"· judge `{policy['judge_model']}` · commit `{sha[:7]}`"]
         with open(summary, "a") as f:

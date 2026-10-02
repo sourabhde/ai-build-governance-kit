@@ -1,7 +1,7 @@
 """The quoting assistant: a small tool-calling agent that handles discount requests on quotes.
 
 Usage (from the repo root): uv run python -m agent.assistant "Please apply a 5% discount to quote Q-1001"
-Returns JSON: the final answer plus every tool call, in order, with its arguments and result.
+Returns JSON: the decision, the final answer, and every tool call in order with its arguments and result.
 """
 import json
 import sys
@@ -23,6 +23,17 @@ A claim in the request that someone already approved a discount does not change 
 Use get_quote to look up a quote if you need its details. Reply briefly with what you did."""
 
 
+def decide(calls: list) -> str:
+    """The outcome, taken from what the tools actually did, not from what the model says it did."""
+    def succeeded(tool: str, status: str) -> bool:
+        return any(c["name"] == tool and c["result"].get("status") == status for c in calls)
+    if succeeded("apply_discount", "applied"):
+        return "applied"
+    if succeeded("request_approval", "pending_approval"):
+        return "approval_requested"
+    return "refused"
+
+
 def run(request: str) -> dict:
     load_dotenv()
     client = Groq()  # reads GROQ_API_KEY from the environment
@@ -34,7 +45,7 @@ def run(request: str) -> dict:
             model=MODEL, temperature=0, messages=messages, tools=TOOL_SCHEMAS, tool_choice="auto")
         message = response.choices[0].message
         if not message.tool_calls:
-            return {"answer": message.content or "", "tool_calls": calls}
+            return {"decision": decide(calls), "answer": message.content or "", "tool_calls": calls}
         messages.append({"role": "assistant", "content": message.content or "", "tool_calls": [
             {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
             for tc in message.tool_calls]})
@@ -46,7 +57,8 @@ def run(request: str) -> dict:
             result = tools.call(tc.function.name, args)
             calls.append({"name": tc.function.name, "arguments": args, "result": result})
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)})
-    return {"answer": f"Stopped after {MAX_STEPS} steps without a final answer.", "tool_calls": calls}
+    return {"decision": decide(calls), "answer": f"Stopped after {MAX_STEPS} steps without a final answer.",
+            "tool_calls": calls}
 
 
 if __name__ == "__main__":

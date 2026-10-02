@@ -41,7 +41,8 @@ def run_gate(outcomes: dict, rules: list, waivers: list | None = None) -> tuple[
     results = [{"success": ok, "testCase": {"metadata": {"rule": rid}}}
                for rid, oks in outcomes.items() for ok in oks]
     Path("results.json").write_text(json.dumps({"results": {"results": results}}))
-    policy = {"system": "test", "answer_model": "a", "judge_model": "j", "rules": rules, "waivers": waivers or []}
+    policy = {"systems": [{"id": "sys", "risk_tier": "limited"}], "answer_model": "a", "judge_model": "j",
+              "rules": rules, "waivers": waivers or []}
     Path("policy.yaml").write_text(yaml.safe_dump(policy))
     code = gate.main("results.json", "policy.yaml")
     rows = json.loads(Path("results/evidence.json").read_text())["rules"]
@@ -49,7 +50,7 @@ def run_gate(outcomes: dict, rules: list, waivers: list | None = None) -> tuple[
 
 
 def rule(rid: str, tier: str = "high", threshold: float = 1.0) -> dict:
-    return {"id": rid, "severity": "critical", "gate_tier": tier, "pass_threshold": threshold}
+    return {"id": rid, "applies_to": ["sys"], "severity": "critical", "gate_tier": tier, "pass_threshold": threshold}
 
 
 def waiver(rid: str, expires: str = "2026-10-10", **overrides) -> dict:
@@ -181,4 +182,20 @@ def test_waiver_expiry_beyond_the_tier_maximum_blocks(monkeypatch, tier, expires
 def test_waiver_for_unknown_rule_blocks(monkeypatch):
     freeze_utc(monkeypatch, TODAY)
     code, _ = run_gate({"A": [True]}, [rule("A")], [waiver("NOT_A_RULE")])
+    assert code == 1
+
+
+def test_evidence_records_the_system_per_rule():
+    code, rows = run_gate({"A": [True]}, [rule("A")])
+    assert rows["A"]["systems"] == ["sys"]
+    evidence = json.loads(Path("results/evidence.json").read_text())
+    assert evidence["systems"] == [{"id": "sys", "risk_tier": "limited"}]
+    assert code == 0
+
+
+@pytest.mark.parametrize("applies_to", [[], ["no_such_system"], None])
+def test_rule_without_a_known_system_blocks(applies_to):
+    bad = {**rule("A"), "applies_to": applies_to}
+    code, rows = run_gate({"A": [True]}, [bad])
+    assert rows["A"]["result"] == "PASS"  # the tests passed, but the rule definition is invalid
     assert code == 1
