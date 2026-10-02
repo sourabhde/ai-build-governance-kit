@@ -29,6 +29,7 @@ Two apps are under test. The policy assistant (`rag.py`) answers questions about
 | `promptfooconfig.yaml` | 19 tests, each tagged with the rule it checks; the agent tests check its tool calls in code |
 | `runtime/` | The runtime guard (same policy, applied at request time) and the tools that turn its events into tests |
 | `tests/generated/` | Regression tests generated from runtime events, reviewed and committed by a person |
+| `dashboard/` | Builds the one-page governance dashboard from the files above |
 | `gate.py` | Scores each rule, prints the verdict, writes `results/evidence.json` |
 | `.github/workflows/govern.yml` | Runs all of the above on every pull request and push to `main` |
 
@@ -71,6 +72,17 @@ uv run python -m runtime.to_tests   # events -> tests/generated/runtime_cases.ya
 ```
 
 The guard is on by default; `RUNTIME_GUARD=off` switches it off. The CI eval runs with it off, so the gate tests each app's own controls; the guard has its own unit tests.
+
+## Dashboard
+
+One page shows the whole picture for a review or a shared screen: the gate result, how the kit works, each system and rule, run history, waivers, runtime events, the feedback loop and the raw evidence. It is a single offline HTML file built only from repo files (`policy.yaml`, the latest `results/evidence.json`, `evidence/history.jsonl`, the runtime event logs and the generated tests); anything missing is shown as missing, never estimated.
+
+```bash
+uv run python -m dashboard.build   # writes dashboard/index.html
+uv run python -m dashboard.open    # opens it in your browser
+```
+
+Every `gate.py` run appends a line to `evidence/history.jsonl` (use `--label` to say what the run was). CI builds the dashboard on every run and uploads it as the `governance-dashboard` artifact.
 
 ## Quickstart (under 5 minutes)
 
@@ -119,7 +131,7 @@ This is a learning prototype, not a production system:
 
 - MCP (Model Context Protocol) servers under the same policy and tests
 - Asynchronous groundedness sampling (R1) for live traffic, which the runtime guard deliberately skips
-- An evidence dashboard that collects `evidence.json` across runs and systems
+- A shared evidence store, so the dashboard covers many repos and teams, not one local history file
 
 See [docs/concept-sdk.md](docs/concept-sdk.md) for a concept of how this could become a reusable developer SDK.
 

@@ -199,3 +199,16 @@ def test_rule_without_a_known_system_blocks(applies_to):
     code, rows = run_gate({"A": [True]}, [bad])
     assert rows["A"]["result"] == "PASS"  # the tests passed, but the rule definition is invalid
     assert code == 1
+
+
+def test_each_run_appends_a_history_line_and_records_tests():
+    run_gate({"A": [True, False]}, [rule("A", tier="medium", threshold=0.5)])
+    code = gate.main("results.json", "policy.yaml", label="second run")
+    lines = Path("evidence/history.jsonl").read_text().splitlines()
+    assert len(lines) == 2
+    last = json.loads(lines[-1])
+    assert last["label"] == "second run" and last["gate"] == "PASSED" and code == 0
+    assert last["rules"]["A"] == {"pass_rate": 0.5, "result": "PASS"}
+    assert len(last["policy_sha256"]) == 64
+    tests = json.loads(Path("results/evidence.json").read_text())["tests"]
+    assert [t["passed"] for t in tests] == [True, False] and all(t["rule"] == "A" for t in tests)

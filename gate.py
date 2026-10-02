@@ -1,7 +1,9 @@
 """CI gate: compare promptfoo results against policy.yaml, write evidence, block the merge if needed.
 
-Usage: uv run python gate.py results/results.json [policy.yaml]
+Usage: uv run python gate.py results/results.json [policy.yaml] [--label "what this run is"]
+Writes results/evidence.json and appends a one-line summary to evidence/history.jsonl.
 """
+import argparse
 import hashlib
 import json
 import os
@@ -13,44 +15,51 @@ from pathlib import Path
 
 import yaml
 
+from runtime.pii import redact_pii
+
 WAIVER_FIELDS = {"rule", "owner", "reason", "expires"}
 # Per gate tier: the longest a waiver may run (days from today), and whether a second person must approve it.
 WAIVER_LIMITS = {"low": (30, False), "medium": (30, False), "high": (14, True)}
+
+
+def waiver_problem(w: dict, tiers: dict, today: date) -> tuple[str, str | None]:
+    """Check one waiver against its tier's rules. Returns (status, problem): valid / expired / invalid."""
+    rid = w.get("rule", "?")
+    if rid not in tiers:
+        return "invalid", f"waiver for unknown rule {rid}"
+    tier = tiers[rid]
+    max_days, needs_approver = WAIVER_LIMITS.get(tier, WAIVER_LIMITS["high"])
+    required = WAIVER_FIELDS | ({"approved_by"} if needs_approver else set())
+    if missing := required - {k for k, v in w.items() if v not in (None, "")}:
+        return "invalid", f"waiver for {rid} is missing: {', '.join(sorted(missing))}"
+    try:
+        expires = date.fromisoformat(str(w["expires"]))
+    except ValueError:
+        return "invalid", f"waiver for {rid} has an invalid expiry date: {w['expires']}"
+    if expires < today:
+        return "expired", f"waiver for {rid} (owner {w['owner']}) EXPIRED on {expires}"
+    if (expires - today).days > max_days:
+        return "invalid", (f"waiver for {rid} expires {expires}, more than {max_days} days ahead "
+                           f"(the maximum for a {tier}-tier rule)")
+    if needs_approver and str(w["approved_by"]).strip().casefold() == str(w["owner"]).strip().casefold():
+        return "invalid", (f"waiver for {rid} is approved by its own owner ({w['owner']}); "
+                           f"a {tier}-tier waiver needs a second person")
+    return "valid", None
 
 
 def check_waivers(waivers: list, tiers: dict, today: date) -> tuple[dict, list]:
     """Split waivers into valid ones (by rule id) and problems (anything breaking the waiver rules)."""
     valid, problems = {}, []
     for w in waivers or []:
-        rid = w.get("rule", "?")
-        if rid not in tiers:
-            problems.append(f"waiver for unknown rule {rid}")
-            continue
-        tier = tiers[rid]
-        max_days, needs_approver = WAIVER_LIMITS.get(tier, WAIVER_LIMITS["high"])
-        required = WAIVER_FIELDS | ({"approved_by"} if needs_approver else set())
-        if missing := required - {k for k, v in w.items() if v not in (None, "")}:
-            problems.append(f"waiver for {rid} is missing: {', '.join(sorted(missing))}")
-            continue
-        try:
-            expires = date.fromisoformat(str(w["expires"]))
-        except ValueError:
-            problems.append(f"waiver for {rid} has an invalid expiry date: {w['expires']}")
-            continue
-        if expires < today:
-            problems.append(f"waiver for {rid} (owner {w['owner']}) EXPIRED on {expires}")
-        elif (expires - today).days > max_days:
-            problems.append(f"waiver for {rid} expires {expires}, more than {max_days} days ahead "
-                            f"(the maximum for a {tier}-tier rule)")
-        elif needs_approver and str(w["approved_by"]).strip().casefold() == str(w["owner"]).strip().casefold():
-            problems.append(f"waiver for {rid} is approved by its own owner ({w['owner']}); "
-                            f"a {tier}-tier waiver needs a second person")
+        status, problem = waiver_problem(w, tiers, today)
+        if problem:
+            problems.append(problem)
         else:
-            valid[rid] = w
+            valid[w["rule"]] = w
     return valid, problems
 
 
-def main(results_path: str, policy_path: str = "policy.yaml") -> int:
+def main(results_path: str, policy_path: str = "policy.yaml", label: str = "local") -> int:
     policy_bytes = Path(policy_path).read_bytes()
     policy = yaml.safe_load(policy_bytes)
     results = json.load(open(results_path))["results"]["results"]
@@ -89,8 +98,8 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
             result = "WARN"
         else:
             result, block = "FAIL", True
-        rows.append({"rule": rid, "systems": rule.get("applies_to") or [], "gate_tier": tier, "severity": rule["severity"], "passed": passed[rid],
-                     "total": n, "pass_rate": round(rate, 3), "threshold": rule["pass_threshold"],
+        rows.append({"rule": rid, "systems": rule.get("applies_to") or [], "gate_tier": tier,
+                     "severity": rule["severity"], "passed": passed[rid], "total": n, "pass_rate": round(rate, 3), "threshold": rule["pass_threshold"],
                      "result": result,
                      "waiver_owner": waiver["owner"] if waiver else None,
                      "waiver_expires": str(waiver["expires"]) if waiver else None,
@@ -115,6 +124,15 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
     # 2. Evidence file: what was tested, against which policy version, with what result.
     sha = os.environ.get("GITHUB_SHA") or subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    clean = bool(os.environ.get("GITHUB_SHA")) or not subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip()
+    tests = []  # one line per test; model outputs are never stored, failure reasons are PII-redacted
+    for r in results:
+        meta = r.get("testCase", {}).get("metadata") or r.get("metadata") or {}
+        reason = "" if r.get("success") else (r.get("gradingResult") or {}).get("reason") or r.get("error") or ""
+        tests.append({"description": r.get("testCase", {}).get("description", ""), "rule": meta.get("rule"),
+                      "source": meta.get("source", "suite"), "event_key": meta.get("event_key"),
+                      "passed": bool(r.get("success")), "reason": redact_pii(str(reason))[:300]})
     evidence = {
         "timestamp": now.isoformat(timespec="seconds"),
         "git_commit": sha,
@@ -125,9 +143,18 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
         "gate": verdict,
         "rules": rows,
         "problems": problems,  # invalid waivers or rule definitions
+        "tests": tests,
     }
     Path("results").mkdir(exist_ok=True)
     Path("results/evidence.json").write_text(json.dumps(evidence, indent=2))
+
+    # Run history: one line per gate run, so trends can be shown later.
+    history = {"timestamp": evidence["timestamp"], "commit": sha, "working_tree_clean": clean,
+               "policy_sha256": evidence["policy_sha256"], "gate": verdict, "label": label,
+               "rules": {r["rule"]: {"pass_rate": r["pass_rate"], "result": r["result"]} for r in rows}}
+    Path("evidence").mkdir(exist_ok=True)
+    with open("evidence/history.jsonl", "a") as f:
+        f.write(json.dumps(history) + "\n")
 
     # 3. GitHub job summary (shown on the PR / run page), only when running in Actions.
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -148,4 +175,9 @@ def main(results_path: str, policy_path: str = "policy.yaml") -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(*sys.argv[1:3]))
+    parser = argparse.ArgumentParser(description="Governance gate: results + policy -> verdict and evidence.")
+    parser.add_argument("results")
+    parser.add_argument("policy", nargs="?", default="policy.yaml")
+    parser.add_argument("--label", default="local", help="what this run is, recorded in evidence/history.jsonl")
+    args = parser.parse_args()
+    sys.exit(main(args.results, args.policy, args.label))
