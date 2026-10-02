@@ -11,7 +11,7 @@ This kit moves the checks into the developer pipeline: the rules are written dow
 
 ```mermaid
 flowchart LR
-    A["policy.yaml<br/>5 rules, gate tier, threshold"] --> B["promptfoo<br/>16 tests against the apps"]
+    A["policy.yaml<br/>5 rules, gate tier, threshold"] --> B["promptfoo<br/>19 tests against the apps"]
     B --> C["gate.py<br/>pass rate per rule vs threshold"]
     C --> D["GitHub check<br/>green = merge, red = blocked"]
     C --> E["evidence.json<br/>who, what, when, which policy version"]
@@ -26,7 +26,9 @@ Two apps are under test. The policy assistant (`rag.py`) answers questions about
 | `policy.yaml` | The rules: what "safe" means for this system, how strict each rule is, which merges it blocks |
 | `rag.py` | The AI app: retrieves Acme documents (filtered by role) and asks an LLM on Groq |
 | `agent/` | The quoting assistant: its prompt, the tool-calling loop, and the mocked tools that enforce the discount limits |
-| `promptfooconfig.yaml` | 16 tests, each tagged with the rule it checks; the agent tests check its tool calls in code |
+| `promptfooconfig.yaml` | 19 tests, each tagged with the rule it checks; the agent tests check its tool calls in code |
+| `runtime/` | The runtime guard (same policy, applied at request time) and the tools that turn its events into tests |
+| `tests/generated/` | Regression tests generated from runtime events, reviewed and committed by a person |
 | `gate.py` | Scores each rule, prints the verdict, writes `results/evidence.json` |
 | `.github/workflows/govern.yml` | Runs all of the above on every pull request and push to `main` |
 
@@ -56,6 +58,19 @@ A low-tier rule only warns. A medium-tier rule blocks the merge when its pass ra
 When a team has to ship with a known failure, they add a waiver to `policy.yaml`: which rule, a named owner, the reason, and an expiry date. The gate then shows the rule as WAIVED instead of blocking.
 Waivers are stricter for riskier rules: a medium-tier waiver can run for at most 30 days; a high-tier waiver at most 14 days, and it must also be approved by a second person (`approved_by`), not the owner.
 Waivers can't be forgotten: a waiver that is incomplete, too long or expired fails the gate by itself until someone fixes it. Every waiver's owner, approver and expiry is recorded in `evidence.json`.
+
+## Runtime guardrail and feedback loop
+
+The same `policy.yaml` is also enforced while the assistants run. `runtime/guard.py` checks each request with cheap, deterministic checks: injection patterns on the input (R3), customer emails and phone numbers in the output (R2), salary data for non-managers (R4), and every agent tool call against the discount limits in the policy (R5). Each check takes well under a millisecond. What happens on a hit follows the rule's gate tier: low is logged, medium is flagged, high is blocked with a safe message. R1 (groundedness) needs an LLM judge, so it isn't checked inline; in production a sample of answers would be judged asynchronously.
+
+Every hit is written to `runtime/events.jsonl` with the rule, system, tier, action, policy hash and latency, with any PII redacted (`runtime/sample_events.jsonl` is a synthetic example). `uv run python -m runtime.to_tests` turns new events into regression tests in `tests/generated/`, which a person reviews and commits, so a problem caught live becomes a CI test.
+
+```bash
+uv run python -m runtime.simulate   # 3 live requests: guard on, the apps' own guardrails off
+uv run python -m runtime.to_tests   # events -> tests/generated/runtime_cases.yaml
+```
+
+The guard is on by default; `RUNTIME_GUARD=off` switches it off. The CI eval runs with it off, so the gate tests each app's own controls; the guard has its own unit tests.
 
 ## Quickstart (under 5 minutes)
 
@@ -96,14 +111,14 @@ See [docs/demo-script.md](docs/demo-script.md) for a 2-minute walkthrough.
 
 This is a learning prototype, not a production system:
 - Retrieval is simple keyword matching; real systems use embeddings.
-- 16 tests are a demonstration, not coverage. Passing them doesn't prove the system is safe.
+- 19 tests are a demonstration, not coverage. Passing them doesn't prove the system is safe.
 - The LLM judge can be wrong, and model answers vary between runs.
 - The guardrails (regex redaction, comment stripping) are basic and not hardened against a determined attacker.
 
 ## Roadmap
 
 - MCP (Model Context Protocol) servers under the same policy and tests
-- Runtime guardrails, so the same rules apply in production and not only in CI
+- Asynchronous groundedness sampling (R1) for live traffic, which the runtime guard deliberately skips
 - An evidence dashboard that collects `evidence.json` across runs and systems
 
 See [docs/concept-sdk.md](docs/concept-sdk.md) for a concept of how this could become a reusable developer SDK.

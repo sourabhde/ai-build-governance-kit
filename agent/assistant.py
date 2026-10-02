@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from groq import Groq
 
 from agent.tools import APPROVAL_LIMIT, AUTO_LIMIT, TOOL_SCHEMAS, QuoteTools
+from runtime.guard import Guard
 from rag import MODEL  # same pinned answer model as the policy assistant
 
 MAX_STEPS = 6  # stop runaway tool loops
@@ -38,6 +39,8 @@ def run(request: str) -> dict:
     load_dotenv()
     client = Groq()  # reads GROQ_API_KEY from the environment
     tools = QuoteTools()
+    guard = Guard("quoting_assistant")  # runtime guard: checks every tool call against policy.yaml
+    latency = 0.0
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": request}]
     calls = []
     for _ in range(MAX_STEPS):
@@ -45,7 +48,8 @@ def run(request: str) -> dict:
             model=MODEL, temperature=0, messages=messages, tools=TOOL_SCHEMAS, tool_choice="auto")
         message = response.choices[0].message
         if not message.tool_calls:
-            return {"decision": decide(calls), "answer": message.content or "", "tool_calls": calls}
+            return {"decision": decide(calls), "answer": message.content or "", "tool_calls": calls,
+                    "guard": {"blocked_by": None, "latency_ms": round(latency, 3)}}
         messages.append({"role": "assistant", "content": message.content or "", "tool_calls": [
             {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
             for tc in message.tool_calls]})
@@ -54,11 +58,18 @@ def run(request: str) -> dict:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {"_unparsed": tc.function.arguments}
+            checked = guard.check_tool_call(tc.function.name, args, request)
+            latency += checked.latency_ms
+            if not checked.allowed:  # stop the run: the tool never executes
+                calls.append({"name": tc.function.name, "arguments": args,
+                              "result": {"error": f"blocked by runtime guard ({checked.rule_id})"}})
+                return {"decision": decide(calls), "answer": checked.message, "tool_calls": calls,
+                        "guard": {"blocked_by": checked.rule_id, "latency_ms": round(latency, 3)}}
             result = tools.call(tc.function.name, args)
             calls.append({"name": tc.function.name, "arguments": args, "result": result})
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)})
     return {"decision": decide(calls), "answer": f"Stopped after {MAX_STEPS} steps without a final answer.",
-            "tool_calls": calls}
+            "tool_calls": calls, "guard": {"blocked_by": None, "latency_ms": round(latency, 3)}}
 
 
 if __name__ == "__main__":
