@@ -40,6 +40,10 @@ Have three things open: the dashboard (on **How it works**), a terminal in the r
 
 **Click:** the run selector back to the latest run.
 
+**Optional, on GitHub:** show both blocked changes side by side. [PR #3](https://github.com/sourabhde/ai-build-governance-kit/pull/3) is the policy assistant example: support staff see customer contact details, so R2 fails. [PR #6](https://github.com/sourabhde/ai-build-governance-kit/pull/6) is the agent example: the auto-approve discount limit is raised to 30%, so R5 fails. On each, show the red required `govern` check and the gate table in the job summary.
+
+> "These aren't staged failures in a test file. They're realistic one-line change requests, each with a good business reason, and the gate blocks both."
+
 ### 5. Runtime guard and feedback loop (2:50–3:50)
 
 **Click:** **Runtime events**, then **Feedback loop**.

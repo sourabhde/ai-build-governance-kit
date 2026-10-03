@@ -117,6 +117,7 @@ Read [docs/architecture.md](docs/architecture.md) for how it fits together and i
 - **Before the fix:** the tag [`before-guardrails`](https://github.com/sourabhde/ai-build-governance-kit/tree/before-guardrails) is the app with no guardrails. It leaks a customer's email and phone number (R2) and repeats a prompt injection planted in a vendor document (R3). The gate blocks it.
 - **Switch the guardrails off:** `APP_GUARDRAILS=off` disables every guardrail, so you can reproduce the failures on the current code.
 - **The red PR:** [PR #3](https://github.com/sourabhde/ai-build-governance-kit/pull/3) lets support staff see customer contact details, a realistic business request that switches off PII redaction for employees. R2 fails and the gate blocks the merge.
+- **The red agent PR:** [PR #6](https://github.com/sourabhde/ai-build-governance-kit/pull/6) raises the quoting assistant's auto-approve discount limit from 10% to 30%, a one-number change that skips the approval step the policy requires. R5 fails and the gate blocks the merge.
 - **The fix:** [PR #1](https://github.com/sourabhde/ai-build-governance-kit/pull/1) adds PII redaction, an output filter and untrusted-document handling in code, and turns the check green.
 
 See [docs/demo-script.md](docs/demo-script.md) for a 2-minute walkthrough.
