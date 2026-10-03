@@ -18,6 +18,9 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync
 
+      - name: Gate unit tests (no network)
+        run: uv run pytest -q
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -29,11 +32,24 @@ jobs:
         run: npx -y promptfoo@0.123.1 eval -c promptfooconfig.yaml -o results/results.json --no-cache || true
 
       - name: Policy gate
-        run: uv run python gate.py results/results.json
+        run: uv run python gate.py results/results.json --label "ci"
 
       - name: Upload evidence
         if: always()   # keep the evidence even when the gate blocks
         uses: actions/upload-artifact@v4
         with:
           name: governance-evidence
-          path: results/
+          path: |
+            results/
+            evidence/history.jsonl
+
+      - name: Build dashboard
+        if: always()   # build it even when the gate blocks, so the failure is visible
+        run: uv run python -m dashboard.build
+
+      - name: Upload dashboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-dashboard
+          path: dashboard/index.html

@@ -4,3 +4,5 @@ __pycache__/
 node_modules/
 .promptfoo/
 results/
+runtime/events.jsonl
+dashboard/index.html
