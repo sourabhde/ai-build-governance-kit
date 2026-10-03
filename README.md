@@ -110,7 +110,7 @@ uv run python rag.py --role employee "How long is order data kept?"
 - **A runtime guard:** the same policy is enforced on live requests, and what it catches becomes new tests.
 - **A dashboard:** one offline page with tabs and a run selector, built only from repo files.
 
-Read [docs/architecture.md](docs/architecture.md) for how it fits together and its limits, and [docs/demo-v2.md](docs/demo-v2.md) for the 5-minute demo.
+Read [docs/architecture.md](docs/architecture.md) for how it fits together and its limits, and [docs/demo-v2.md](docs/demo-v2.md) for the 5-minute walkthrough.
 
 ## Demo
 
