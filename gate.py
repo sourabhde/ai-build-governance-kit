@@ -1,6 +1,6 @@
 """CI gate: compare promptfoo results against policy.yaml, write evidence, block the merge if needed.
 
-Usage: uv run python gate.py results/results.json [policy.yaml] [--label "what this run is"]
+Usage: uv run python gate.py results/results.json [policy.yaml] [--label "..."] [--description "..."] [--pr URL]
 Writes results/evidence.json and appends a one-line summary to evidence/history.jsonl.
 """
 import argparse
@@ -59,7 +59,31 @@ def check_waivers(waivers: list, tiers: dict, today: date) -> tuple[dict, list]:
     return valid, problems
 
 
-def main(results_path: str, policy_path: str = "policy.yaml", label: str = "local") -> int:
+def describe_call(call: dict) -> str:
+    """One tool call in a few words, e.g. 'apply_discount 20% on Q-1002'."""
+    args, parts = call.get("arguments") or {}, [call.get("name", "?")]
+    if "percent" in args:
+        parts.append(f"{args['percent']}%")
+    if "quote_id" in args:
+        parts.append(f"on {args['quote_id']}")
+    return " ".join(parts)
+
+
+def what_happened(output) -> str:
+    """A short summary of what the app did, kept for failed tests only. PII is redacted."""
+    try:
+        run = json.loads(output)
+    except (TypeError, ValueError):
+        run = None
+    if isinstance(run, dict) and "decision" in run:  # the quoting assistant: its decision and tool calls
+        calls = ", ".join(describe_call(c) for c in run.get("tool_calls") or []) or "no tool calls"
+        return f"decision {run['decision']}; {calls}"
+    text = " ".join(redact_pii(str(output or "")).split())  # the policy assistant: start of its answer
+    return text if len(text) <= 160 else text[:160].rsplit(" ", 1)[0] + "…"
+
+
+def main(results_path: str, policy_path: str = "policy.yaml", label: str = "local",
+         description: str = "", pr: str = "") -> int:
     policy_bytes = Path(policy_path).read_bytes()
     policy = yaml.safe_load(policy_bytes)
     results = json.load(open(results_path))["results"]["results"]
@@ -128,13 +152,20 @@ def main(results_path: str, policy_path: str = "policy.yaml", label: str = "loca
     clean = bool(os.environ.get("GITHUB_SHA")) or not subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=no", "--", ".", ":!evidence/history.jsonl"],
         capture_output=True, text=True).stdout.strip()
-    tests = []  # one line per test; model outputs are never stored, failure reasons are PII-redacted
+    # One line per test with its input. For failed tests only: what happened (a short, PII-redacted summary of
+    # the output) and why it failed. Full model outputs are never stored.
+    tests = []
     for r in results:
         meta = r.get("testCase", {}).get("metadata") or r.get("metadata") or {}
-        reason = "" if r.get("success") else (r.get("gradingResult") or {}).get("reason") or r.get("error") or ""
+        test_vars = r.get("vars") or r.get("testCase", {}).get("vars") or {}
+        failed = not r.get("success")
+        reason = ((r.get("gradingResult") or {}).get("reason") or r.get("error") or "") if failed else ""
         tests.append({"description": r.get("testCase", {}).get("description", ""), "rule": meta.get("rule"),
                       "source": meta.get("source", "suite"), "event_key": meta.get("event_key"),
-                      "passed": bool(r.get("success")), "reason": redact_pii(str(reason))[:300]})
+                      "input": redact_pii(str(test_vars.get("question", ""))), "role": test_vars.get("role"),
+                      "passed": not failed,
+                      "outcome": what_happened((r.get("response") or {}).get("output")) if failed else None,
+                      "reason": redact_pii(str(reason))[:300]})
     evidence = {
         "timestamp": now.isoformat(timespec="seconds"),
         "git_commit": sha,
@@ -153,9 +184,10 @@ def main(results_path: str, policy_path: str = "policy.yaml", label: str = "loca
     # Run history: one line per gate run, so trends can be shown later.
     history = {"timestamp": evidence["timestamp"], "commit": sha, "working_tree_clean": clean,
                "policy_sha256": evidence["policy_sha256"], "gate": verdict, "label": label,
+               "description": description, "pr": pr,
                "rules": {r["rule"]: {"pass_rate": r["pass_rate"], "result": r["result"], "passed": r["passed"],
                                      "total": r["total"]} for r in rows},
-               "tests": [{k: t[k] for k in ("description", "rule", "source", "event_key", "passed")} for t in tests]}
+               "tests": tests}
     Path("evidence").mkdir(exist_ok=True)
     with open("evidence/history.jsonl", "a") as f:
         f.write(json.dumps(history) + "\n")
@@ -183,5 +215,7 @@ if __name__ == "__main__":
     parser.add_argument("results")
     parser.add_argument("policy", nargs="?", default="policy.yaml")
     parser.add_argument("--label", default="local", help="what this run is, recorded in evidence/history.jsonl")
+    parser.add_argument("--description", default="", help="what changed in this run, in one sentence")
+    parser.add_argument("--pr", default="", help="link to the pull request this run corresponds to")
     args = parser.parse_args()
-    sys.exit(main(args.results, args.policy, args.label))
+    sys.exit(main(args.results, args.policy, args.label, args.description, args.pr))

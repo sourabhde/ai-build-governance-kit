@@ -144,6 +144,24 @@ def run_name(run: dict, i: int) -> str:
     return f'#{i + 1} {run.get("label", "")} ({when(run["timestamp"])} UTC)'
 
 
+def failing(run: dict) -> list[str]:
+    return [rid for rid, v in run["rules"].items() if v["result"] == "FAIL"]
+
+
+def pr_link(run: dict) -> str:
+    """The run's pull request as a link, if one was recorded."""
+    url = run.get("pr") or ""
+    if not url.startswith("https://"):
+        return ""
+    text = f'PR #{url.rstrip("/").rsplit("/", 1)[-1]}' if "/pull/" in url else "link"
+    return f'<a href="{escape(url)}">{escape(text)}</a>'
+
+
+def run_story(run: dict) -> str:
+    """Description and PR link, e.g. 'Everything as intended. · PR #5'."""
+    return " · ".join(x for x in (escape(run.get("description") or ""), pr_link(run)) if x)
+
+
 # ---------- header with run selector ----------
 
 def header(d: dict) -> str:
@@ -153,8 +171,15 @@ def header(d: dict) -> str:
     def one(run, i):
         if run is None:
             return '<p class="empty">No gate run found. Run the eval and <code>gate.py</code>, then rebuild.</p>'
-        past = (f'<p class="pastnote" role="status">Showing past run {escape(run_name(run, i))}, not the latest.</p>'
-                if i != len(runs) - 1 else "")
+        if i != len(runs) - 1:
+            story = run_story(run)
+            past = (f'<div class="pastnote" role="status"><strong>Showing past run {escape(run_name(run, i))}, '
+                    f'not the latest.</strong>{"<br>" + story if story else ""}'
+                    f'<br>Failed: {escape(", ".join(failing(run)) or "none")}</div>')
+        else:
+            story = run_story(run)
+            past = f'<p class="runnote">Latest run #{i + 1} {escape(run.get("label", ""))}{": " + story if story else ""}</p>'
+
         same = run["policy_sha256"] == d["policy_sha256"]
         facts = counts + [
             ("Commit", short(run["commit"], 7) + ("" if run.get("working_tree_clean") is not False else " (uncommitted changes)")),
@@ -251,10 +276,7 @@ def rules(d: dict) -> str:
             rate = (f'{bar(r["pass_rate"])} {pct(r["pass_rate"])}'
                     f'{" (" + str(r["passed"]) + "/" + str(r["total"]) + ")" if "total" in r else ""}') if r else "not run"
             mine = [t for t in tests if t.get("rule") == rid]
-            test_items = "".join(
-                f'<li>{badge("PASS" if t["passed"] else "FAIL")} {escape(t["description"])}'
-                f'{" <em>(generated from a runtime event)</em>" if t.get("source") == "runtime" else ""}'
-                f'{"<br><small>" + escape(t["reason"]) + "</small>" if t.get("reason") else ""}</li>' for t in mine)
+            test_items = "".join(test_item(t) for t in mine)
             tid = f"tests-{ri}-{i}"
             body.append(
                 f'<tr><td><button class="expand" type="button" aria-expanded="false" aria-controls="{tid}">'
@@ -276,6 +298,18 @@ def rules(d: dict) -> str:
                  "cases and results for the run selected in the header.")
 
 
+def test_item(t: dict) -> str:
+    """One test in an expanded rule. Failed tests also show their input, what happened and why it failed."""
+    line = (f'<li>{badge("PASS" if t["passed"] else "FAIL")} {escape(t["description"])}'
+            f'{" <em>(generated from a runtime event)</em>" if t.get("source") == "runtime" else ""}')
+    if not t["passed"]:
+        details = [("Input", f'&ldquo;{escape(t["input"])}&rdquo;' + (f' (role {escape(t["role"])})' if t.get("role") else "")
+                    if t.get("input") else ""),
+                   ("What happened", escape(t.get("outcome") or "")), ("Why it failed", escape(t.get("reason") or ""))]
+        line += "".join(f'<div class="detail"><strong>{k}:</strong> {v}</div>' for k, v in details if v)
+    return line + "</li>"
+
+
 def history(d: dict) -> str:
     runs = d["runs"]
     if not runs:
@@ -293,12 +327,13 @@ def history(d: dict) -> str:
             f'<tbody>{"".join(rows)}<tr class="gaterow"><th scope="row">Gate</th>{gate_row}</tr></tbody></table></div>')
     run_rows = "".join(
         f'<tr><td>#{i + 1}</td><td>{when(r["timestamp"])}</td><td>{escape(r.get("label", ""))}</td>'
+        f'<td>{run_story(r) or "–"}</td>'
         f'<td>{short(r["commit"], 7)}{" <small>(uncommitted changes)</small>" if r.get("working_tree_clean") is False else ""}</td>'
         f'<td>{short(r["policy_sha256"])}</td><td>{badge(r["gate"])}</td>'
-        f'<td>{escape(", ".join(k for k, v in r["rules"].items() if v["result"] == "FAIL") or "none")}</td></tr>'
+        f'<td>{escape(", ".join(failing(r)) or "none")}</td></tr>'
         for i, r in enumerate(runs))
     table = ('<h3>Runs</h3><div class="scroll"><table><thead><tr><th>Run</th><th>Time (UTC)</th><th>Label</th>'
-             f'<th>Commit</th><th>Policy hash</th><th>Gate</th><th>Failing rules</th></tr></thead><tbody>{run_rows}</tbody></table></div>')
+             f'<th>What changed</th><th>Commit</th><th>Policy hash</th><th>Gate</th><th>Failing rules</th></tr></thead><tbody>{run_rows}</tbody></table></div>')
     return panel("history", "Run history", grid + table, "Pass rate per rule for every recorded gate run.")
 
 
@@ -410,7 +445,10 @@ h1{font-size:2.1rem;margin:0 0 12px}h2{font-size:1.65rem;margin:0 0 8px}h3{margi
 .runpick{display:block;font-weight:700;margin-bottom:12px}
 .runpick select{font:inherit;font-weight:400;padding:4px 8px;margin-left:6px;border:2px solid var(--line);border-radius:8px;
 background:var(--card);color:var(--fg);max-width:100%}
-.pastnote{border:2px dashed var(--warn);color:var(--warn);font-weight:700;padding:8px 12px;border-radius:8px;margin:0 0 12px}
+.pastnote{border:2px dashed var(--warn);padding:10px 14px;border-radius:8px;margin:0 0 12px}
+.pastnote strong{color:var(--warn)}.runnote{margin:0 0 12px;color:var(--muted)}
+a{color:var(--accent);font-weight:700}
+.detail{font-size:.92rem;margin:2px 0 0 4px}.detail strong{color:var(--muted)}
 .gate .badge{font-size:1.6rem;padding:6px 18px}
 .facts{display:flex;flex-wrap:wrap;gap:12px;margin-top:16px}
 .fact{background:var(--card);border:2px solid var(--line);border-radius:10px;padding:8px 14px;min-width:130px}
