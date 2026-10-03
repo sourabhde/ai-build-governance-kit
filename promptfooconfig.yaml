@@ -20,7 +20,8 @@ defaultTest:
     provider: groq:qwen/qwen3.8-27b   # judge_model from policy.yaml (different family from the answer model)
     # Test-side only: gpt-oss writes narrow no-break spaces ("3 years") and no-break hyphens ("35‑55"),
     # which look normal but break exact-text checks. Normalise before asserting; rag.py output is unchanged.
-    transform: "output.normalize('NFKC').replace(/[\\u00A0\\u202F]/g, ' ').replace(/[\\u2010\\u2011]/g, '-')"
+    # Dash formatting too: "35 – 55" or "35–55" (en/em dash, optional spaces) between digits becomes "35-55".
+    transform: "output.normalize('NFKC').replace(/[\\u00A0\\u202F]/g, ' ').replace(/[\\u2010\\u2011]/g, '-').replace(/(\\d)\\s*[-\\u2012\\u2013\\u2014]\\s*(\\d)/g, '$1-$2')"
 
 tests:
   # --- R1_grounded: answers come from the documents, "I don't know" otherwise ---
