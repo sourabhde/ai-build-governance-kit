@@ -185,6 +185,8 @@ def main(results_path: str, policy_path: str = "policy.yaml", label: str = "loca
     history = {"timestamp": evidence["timestamp"], "commit": sha, "working_tree_clean": clean,
                "policy_sha256": evidence["policy_sha256"], "gate": verdict, "label": label,
                "description": description, "pr": pr,
+               "branch": os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME") or subprocess.run(
+                   ["git", "branch", "--show-current"], capture_output=True, text=True).stdout.strip(),
                "rules": {r["rule"]: {"pass_rate": r["pass_rate"], "result": r["result"], "passed": r["passed"],
                                      "total": r["total"]} for r in rows},
                "tests": tests}

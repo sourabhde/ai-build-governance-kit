@@ -7,6 +7,8 @@ source is missing, the page says so instead of showing a number.
 """
 import hashlib
 import json
+import os
+import subprocess
 from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
@@ -83,6 +85,7 @@ def load(sources: dict) -> dict:
         "events": group_events(events),
         "generated": generated or [],
         "found": {name: path.exists() for name, path in sources.items()},
+        "branch": current_branch(),
         "paths": {name: str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
                   for name, path in sources.items()},
     }
@@ -140,6 +143,21 @@ def per_run(d: dict, render_one) -> str:
                    for i, run in enumerate(d["runs"]))
 
 
+def current_branch() -> str:
+    """The branch the page is built from: the PR's head branch in CI, else the local git branch."""
+    env = os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME")
+    if env:
+        return env
+    out = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, cwd=ROOT)
+    return out.stdout.strip() or "this branch"
+
+
+def latest_label(run: dict, branch: str) -> str:
+    """E.g. 'Latest run on v2 (PR #5)'."""
+    link = pr_link(run)
+    return f'Latest run on {escape(run.get("branch") or branch)}{" (" + link + ")" if link else ""}'
+
+
 def run_name(run: dict, i: int) -> str:
     return f'#{i + 1} {run.get("label", "")} ({when(run["timestamp"])} UTC)'
 
@@ -178,7 +196,8 @@ def header(d: dict) -> str:
                     f'<br>Failed: {escape(", ".join(failing(run)) or "none")}</div>')
         else:
             story = run_story(run)
-            past = f'<p class="runnote">Latest run #{i + 1} {escape(run.get("label", ""))}{": " + story if story else ""}</p>'
+            detail = f'#{i + 1} {escape(run.get("label", ""))}{": " + escape(run.get("description") or "") if run.get("description") else ""}'
+            past = f'<p class="runnote"><strong>{latest_label(run, d["branch"])}</strong> · {detail}</p>'
 
         same = run["policy_sha256"] == d["policy_sha256"]
         facts = counts + [
@@ -396,9 +415,10 @@ def feedback(d: dict) -> str:
     if not rows:
         return panel("feedback", "Feedback loop", missing("blocked or flagged events", ""))
     body = ('<div class="scroll"><table><thead><tr><th>Runtime event</th><th></th><th>Generated test</th><th></th>'
-            f'<th>Latest result</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+            f'<th>Regression test on current code</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
     return panel("feedback", "Feedback loop", body,
-                 "Each event caught at runtime becomes a regression test (matched by its event key), so CI keeps checking it.")
+                 "Each event caught at runtime becomes a regression test (matched by its event key), so CI keeps checking it. "
+                 "Results are the regression test on current code (the latest run), not the result of any earlier pull request.")
 
 
 def evidence(d: dict) -> str:
@@ -446,7 +466,7 @@ h1{font-size:2.1rem;margin:0 0 12px}h2{font-size:1.65rem;margin:0 0 8px}h3{margi
 .runpick select{font:inherit;font-weight:400;padding:4px 8px;margin-left:6px;border:2px solid var(--line);border-radius:8px;
 background:var(--card);color:var(--fg);max-width:100%}
 .pastnote{border:2px dashed var(--warn);padding:10px 14px;border-radius:8px;margin:0 0 12px}
-.pastnote strong{color:var(--warn)}.runnote{margin:0 0 12px;color:var(--muted)}
+.pastnote strong{color:var(--warn)}.runnote{margin:0 0 12px;color:var(--muted)}.runnote strong{color:var(--fg)}
 a{color:var(--accent);font-weight:700}
 .detail{font-size:.92rem;margin:2px 0 0 4px}.detail strong{color:var(--muted)}
 .gate .badge{font-size:1.6rem;padding:6px 18px}

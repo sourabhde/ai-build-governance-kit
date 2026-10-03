@@ -191,3 +191,16 @@ def test_failed_test_shows_input_and_what_happened(tmp_path):
     assert "<strong>Input:</strong> &ldquo;What is the phone number?&rdquo; (role employee)" in seed
     assert "<strong>What happened:</strong> The phone is [phone redacted]." in seed
     assert "<strong>Why it failed:</strong>" in seed
+
+
+def test_default_view_is_labelled_with_branch_and_pr(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_HEAD_REF", "v2")
+    html = html_for(tmp_path)
+    latest = html[html.index('data-run="2"'):]
+    assert 'Latest run on v2 (<a href="https://github.com/o/r/pull/5">PR #5</a>)' in latest
+
+
+def test_feedback_results_are_labelled_as_current_code(tmp_path):
+    html = html_for(tmp_path)
+    feedback = html[html.index('id="panel-feedback"'):html.index('id="panel-evidence"')]
+    assert "<th>Regression test on current code</th>" in feedback and "Latest result" not in feedback
