@@ -8,7 +8,7 @@ The discount rules are enforced HERE, in code, not only in the prompt:
 import copy
 import logging
 
-AUTO_LIMIT = 10       # highest discount (%) the assistant may apply on its own
+AUTO_LIMIT = 30       # highest discount (%) the assistant may apply on its own
 APPROVAL_LIMIT = 30   # highest discount (%) that can be sent for approval
 
 QUOTES = {
