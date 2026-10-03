@@ -42,7 +42,7 @@ def redact_pii(text: str) -> str:
     return PHONE.sub("[phone redacted]", text)
 
 
-def load_documents(guardrails: bool) -> list[dict]:
+def load_documents(guardrails: bool, redact: bool = True) -> list[dict]:
     """Read every data/*.md file; the first-line comment holds its access level and source."""
     docs = []
     for path in sorted(DATA_DIR.glob("*.md")):
@@ -52,7 +52,8 @@ def load_documents(guardrails: bool) -> list[dict]:
         access = match.group(1) if match else "manager"  # unknown -> most restrictive
         if guardrails:
             text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()  # hidden comments never reach the model
-            text = redact_pii(text)  # PII minimisation: the model never sees emails or phone numbers
+            if redact:
+                text = redact_pii(text)  # PII minimisation: the model never sees emails or phone numbers
         docs.append({"name": path.name, "access": access, "untrusted": "untrusted" in header, "text": text})
     return docs
 
@@ -84,9 +85,11 @@ def answer(question: str, role: str) -> dict:
         raise ValueError(f"Unknown role: {role!r}. Use one of {list(ROLE_ACCESS)}.")
     load_dotenv()
     guardrails = os.getenv("ACME_GUARDRAILS", "on").lower() != "off"
+    # Support staff need customer contact details to follow up on tickets.
+    redact = role != "employee"
 
     # ACCESS CONTROL: drop documents this role may not see BEFORE retrieval, in code.
-    allowed = [d for d in load_documents(guardrails) if d["access"] in ROLE_ACCESS[role]]
+    allowed = [d for d in load_documents(guardrails, redact) if d["access"] in ROLE_ACCESS[role]]
     hits = retrieve(question, allowed)
 
     context = "\n\n".join(format_doc(d, guardrails) for d in hits)
@@ -101,7 +104,7 @@ def answer(question: str, role: str) -> dict:
     )
     text = response.choices[0].message.content
     return {
-        "answer": redact_pii(text) if guardrails else text,  # output filter: defence in depth
+        "answer": redact_pii(text) if guardrails and redact else text,  # output filter: defence in depth
         "sources": [d["name"] for d in hits],
         "model": MODEL,
     }
