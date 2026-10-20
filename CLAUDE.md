@@ -4,7 +4,7 @@ Personal learning project by Sourabh De. Demonstrates "governance-as-code for AI
 policy.yaml -> automated eval tests (promptfoo) -> CI gate (GitHub Actions) -> evidence file.
 
 ## Data
-data/ holds 5 small fictional "Acme Retail" documents. The first line of each file declares its access level
+data/ holds 5 small documents for a fictional company. The first line of each file declares its access level
 (all / employee / manager). vendor_note_cloudfax.md contains a planted prompt injection for testing.
 Roles for the app: "employee" and "manager".
 

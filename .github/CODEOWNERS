@@ -1,0 +1,12 @@
+# The rules, the tests, the gate and the CI workflow belong to the risk owner.
+# Any change to these files needs their review (once "Require review from Code Owners" is on).
+/policy.yaml           @sourabhde
+/promptfooconfig.yaml  @sourabhde
+/gate.py               @sourabhde
+/.github/workflows/    @sourabhde
+# The quoting assistant's discount limits (AUTO_LIMIT, APPROVAL_LIMIT) are enforced in agent/tools.py.
+/agent/                @sourabhde
+# Regression tests generated from runtime events: a person reviews them before they join the suite.
+/tests/generated/      @sourabhde
+# The runtime guard enforces the policy at request time.
+/runtime/              @sourabhde
